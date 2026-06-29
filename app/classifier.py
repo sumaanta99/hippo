@@ -11,6 +11,7 @@ from config import Intent, Settings, get_settings
 from llm_client import LLMClient, LLMError
 from logger import get_logger
 from prompts.classification import CLASSIFICATION_PROMPT, CLASSIFICATION_SYSTEM
+from prompts.safety import wrap_user_content
 
 
 logger = get_logger(__name__)
@@ -66,7 +67,7 @@ class IntentClassifier:
                 reasoning="Empty message.",
             )
 
-        prompt = CLASSIFICATION_PROMPT.format(message=message)
+        prompt = CLASSIFICATION_PROMPT.format(message=wrap_user_content(message))
         started = time.perf_counter()
 
         try:

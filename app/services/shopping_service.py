@@ -13,6 +13,7 @@ from prompts import (
     SHOPPING_NOT_FOUND_RESPONSE,
     SHOPPING_REMOVE_PROMPT,
 )
+from prompts.safety import wrap_user_content
 from repositories.shopping_repository import ShoppingRepository
 from shopping import ShoppingItemCreate, format_shopping_for_prompt
 
@@ -42,7 +43,9 @@ class ShoppingService:
         """Extract item(s) from natural language and add them to the shopping list."""
         _ = session_id
         message = user_input.strip()
-        payload = await self._complete_json(SHOPPING_ADD_PROMPT.format(message=message))
+        payload = await self._complete_json(
+            SHOPPING_ADD_PROMPT.format(message=wrap_user_content(message))
+        )
         raw_items = payload.get("items", [])
         if not isinstance(raw_items, list) or not raw_items:
             raise ShoppingServiceError("No shopping items extracted.")
@@ -73,7 +76,7 @@ class ShoppingService:
         current_items = await self._repository.list_active()
         payload = await self._complete_json(
             SHOPPING_REMOVE_PROMPT.format(
-                message=message,
+                message=wrap_user_content(message),
                 items=format_shopping_for_prompt(current_items),
             )
         )

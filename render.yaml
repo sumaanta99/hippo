@@ -26,6 +26,10 @@ services:
         value: WARNING
       - key: STRUCTURED_LOGGING
         value: true
+      - key: HIPPO_ENV
+        value: production
+      - key: HIPPO_SESSION_SECRET
+        generateValue: true
       - key: OPENAI_API_KEY
         sync: false
       - key: OPENAI_MODEL

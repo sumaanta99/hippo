@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Sequence
 
 from memory import MemoryRecord
+from prompts.safety import PROMPT_INJECTION_RULE, wrap_user_content
 
 
 def format_candidates_for_rerank(candidates: Sequence[MemoryRecord]) -> str:
@@ -22,7 +23,10 @@ def format_candidates_for_rerank(candidates: Sequence[MemoryRecord]) -> str:
 
 def rerank_prompt(query: str, candidates: Sequence[MemoryRecord]) -> str:
     """Build the LLM prompt for re-ranking retrieval candidates."""
+    wrapped_query = wrap_user_content(query.strip())
     return f"""You are a memory retrieval re-ranker for Hippo, a personal external memory.
+
+{PROMPT_INJECTION_RULE}
 
 The user is trying to recall something they previously stored. Your job is to decide which stored memories actually answer their query.
 
@@ -44,7 +48,8 @@ Other leniency:
 
 Only include memories that genuinely help answer the query. Exclude unrelated memories even if they appear in the candidate list.
 
-User query: {query.strip()}
+User query:
+{wrapped_query}
 
 Candidate memories:
 {format_candidates_for_rerank(candidates)}

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import secrets
+import time
+from collections import defaultdict
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -11,33 +14,47 @@ from analytics_store import AnalyticsPayload, UsageAnalyticsStore, UsageReport
 from config import get_settings
 from engine.hippo_engine import HippoEngine
 from models.responses import ChatResponse, MemorySnapshot, SessionStats
+from session_auth import create_session_id, sign_session_token, verify_session_token
 
 try:
-    from fastapi import Depends, FastAPI, Header, HTTPException
+    from fastapi import Depends, FastAPI, Header, HTTPException, Request
     from fastapi.middleware.cors import CORSMiddleware
+    from starlette.middleware.base import BaseHTTPMiddleware
+    from starlette.responses import JSONResponse
 except ImportError:  # pragma: no cover - optional dependency
     Depends = None  # type: ignore[misc, assignment]
     FastAPI = None  # type: ignore[misc, assignment]
     HTTPException = None  # type: ignore[misc, assignment]
     CORSMiddleware = None  # type: ignore[misc, assignment]
+    BaseHTTPMiddleware = None  # type: ignore[misc, assignment]
+    JSONResponse = None  # type: ignore[misc, assignment]
+    Request = None  # type: ignore[misc, assignment]
+
+
+SESSION_ID_PATTERN = r"^[a-zA-Z0-9_-]{1,128}$"
+RATE_LIMIT_PATHS = frozenset({"/chat", "/analytics", "/sessions"})
+RATE_LIMIT_MAX_REQUESTS = 60
+RATE_LIMIT_WINDOW_SECONDS = 60
 
 
 class ChatRequest(BaseModel):
     """Incoming chat request body."""
 
-    message: str
-    session_id: str = Field(min_length=1)
+    message: str = Field(max_length=5000)
+    session_id: str = Field(min_length=1, max_length=128, pattern=SESSION_ID_PATTERN)
 
 
-class DeleteMemoryRequest(BaseModel):
-    """Request to delete a memory by id."""
+class SessionResponse(BaseModel):
+    """Server-issued session credentials."""
 
-    memory_id: str
-    session_id: str = Field(min_length=1)
+    session_id: str
+    token: str
 
 
 _engine: HippoEngine | None = None
 _analytics: UsageAnalyticsStore | None = None
+_rate_buckets: dict[str, list[float]] = defaultdict(list)
+_session_rate_buckets: dict[str, list[float]] = defaultdict(list)
 
 
 def get_engine() -> HippoEngine:
@@ -59,6 +76,46 @@ def _parse_cors_origins(raw: str) -> list[str]:
     return origins or ["*"]
 
 
+def _is_production(settings: Any) -> bool:
+    return settings.hippo_env.lower() == "production"
+
+
+def _session_auth_enabled(settings: Any) -> bool:
+    return bool(settings.session_secret)
+
+
+def _verify_session_access(session_id: str, authorization: str | None) -> None:
+    """Ensure the caller owns the session id."""
+    settings = get_settings()
+    if not _session_auth_enabled(settings):
+        return
+
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Unauthorized.")
+
+    token = authorization.removeprefix("Bearer ").strip()
+    if not verify_session_token(session_id, token, settings.session_secret or ""):
+        raise HTTPException(status_code=401, detail="Unauthorized.")
+
+
+def _enforce_session_rate_limit(session_id: str) -> None:
+    """Limit chat volume per authenticated session."""
+    settings = get_settings()
+    now = time.time()
+    bucket = _session_rate_buckets[session_id]
+    bucket[:] = [
+        timestamp
+        for timestamp in bucket
+        if now - timestamp < RATE_LIMIT_WINDOW_SECONDS
+    ]
+    if len(bucket) >= settings.chat_rate_limit_per_session:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many requests for this session. Try again shortly.",
+        )
+    bucket.append(now)
+
+
 def _require_analytics_admin(
     authorization: str | None = Header(default=None),
 ) -> None:
@@ -71,8 +128,41 @@ def _require_analytics_admin(
         raise HTTPException(status_code=401, detail="Unauthorized.")
 
     token = authorization.removeprefix("Bearer ").strip()
-    if token != admin_key:
+    if not secrets.compare_digest(token, admin_key):
         raise HTTPException(status_code=401, detail="Unauthorized.")
+
+
+def _validate_session_id(session_id: str) -> str:
+    """Reject malformed session identifiers."""
+    if len(session_id) > 128 or not session_id.replace("-", "").replace("_", "").isalnum():
+        raise HTTPException(status_code=400, detail="Invalid session id.")
+    return session_id
+
+
+class RateLimitMiddleware(BaseHTTPMiddleware):
+    """Simple in-memory rate limiter for public write endpoints."""
+
+    async def dispatch(self, request: Request, call_next: Any) -> Any:
+        if request.url.path not in RATE_LIMIT_PATHS:
+            return await call_next(request)
+
+        client = request.client.host if request.client else "unknown"
+        now = time.time()
+        bucket = _rate_buckets[client]
+        bucket[:] = [
+            timestamp
+            for timestamp in bucket
+            if now - timestamp < RATE_LIMIT_WINDOW_SECONDS
+        ]
+
+        if len(bucket) >= RATE_LIMIT_MAX_REQUESTS:
+            return JSONResponse(
+                status_code=429,
+                content={"detail": "Too many requests. Try again shortly."},
+            )
+
+        bucket.append(now)
+        return await call_next(request)
 
 
 def create_app() -> Any:
@@ -83,6 +173,9 @@ def create_app() -> Any:
         )
 
     settings = get_settings()
+    production = _is_production(settings)
+    cors_origins = _parse_cors_origins(settings.cors_origins)
+    allow_credentials = "*" not in cors_origins
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -93,15 +186,24 @@ def create_app() -> Any:
         await _analytics.initialize()
         yield
 
-    app = FastAPI(title="Hippo Memory API", version="1.0.0", lifespan=lifespan)
+    app = FastAPI(
+        title="Hippo Memory API",
+        version="1.0.0",
+        lifespan=lifespan,
+        docs_url=None if production else "/docs",
+        redoc_url=None if production else "/redoc",
+        openapi_url=None if production else "/openapi.json",
+    )
+
+    app.add_middleware(RateLimitMiddleware)
 
     if CORSMiddleware is not None:
         app.add_middleware(
             CORSMiddleware,
-            allow_origins=_parse_cors_origins(settings.cors_origins),
-            allow_credentials=True,
-            allow_methods=["*"],
-            allow_headers=["*"],
+            allow_origins=cors_origins,
+            allow_credentials=allow_credentials,
+            allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+            allow_headers=["Authorization", "Content-Type"],
         )
 
     @app.get("/health")
@@ -109,14 +211,31 @@ def create_app() -> Any:
         """Health check for deployment and local dev."""
         return {"status": "ok"}
 
+    @app.post("/sessions", response_model=SessionResponse)
+    async def create_session() -> SessionResponse:
+        """Issue a server-signed session id and token."""
+        session_id = create_session_id()
+        secret = settings.session_secret
+        token = sign_session_token(session_id, secret) if secret else ""
+        return SessionResponse(session_id=session_id, token=token)
+
     @app.post("/chat", response_model=ChatResponse)
-    async def chat(request: ChatRequest) -> ChatResponse:
+    async def chat(
+        request: ChatRequest,
+        authorization: str | None = Header(default=None),
+    ) -> ChatResponse:
         """Process a natural-language message for a session."""
+        _verify_session_access(request.session_id, authorization)
+        _enforce_session_rate_limit(request.session_id)
         return await get_engine().chat(request.message, request.session_id)
 
     @app.post("/analytics")
-    async def record_analytics(payload: AnalyticsPayload) -> dict[str, bool]:
+    async def record_analytics(
+        payload: AnalyticsPayload,
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, bool]:
         """Record private studio usage metrics."""
+        _verify_session_access(payload.session_id, authorization)
         await get_analytics().record_event(payload)
         return {"ok": True}
 
@@ -126,27 +245,48 @@ def create_app() -> Any:
         return await get_analytics().get_report()
 
     @app.get("/memories/{session_id}", response_model=list[MemorySnapshot])
-    async def list_memories(session_id: str) -> list[MemorySnapshot]:
+    async def list_memories(
+        session_id: str,
+        authorization: str | None = Header(default=None),
+    ) -> list[MemorySnapshot]:
         """List active memories for a session."""
-        return await get_engine().get_memories(session_id)
+        validated = _validate_session_id(session_id)
+        _verify_session_access(validated, authorization)
+        return await get_engine().get_memories(validated)
 
     @app.delete("/memories/{memory_id}")
-    async def delete_memory(memory_id: str, session_id: str) -> dict[str, bool]:
+    async def delete_memory(
+        memory_id: str,
+        session_id: str,
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, bool]:
         """Archive a memory by id."""
-        deleted = await get_engine().delete_memory(memory_id, session_id)
+        validated = _validate_session_id(session_id)
+        _verify_session_access(validated, authorization)
+        deleted = await get_engine().delete_memory(memory_id, validated)
         if not deleted:
             raise HTTPException(status_code=404, detail="Memory not found.")
         return {"deleted": True}
 
     @app.get("/stats/{session_id}", response_model=SessionStats)
-    async def stats(session_id: str) -> SessionStats:
+    async def stats(
+        session_id: str,
+        authorization: str | None = Header(default=None),
+    ) -> SessionStats:
         """Return session statistics."""
-        return await get_engine().get_stats(session_id)
+        validated = _validate_session_id(session_id)
+        _verify_session_access(validated, authorization)
+        return await get_engine().get_stats(validated)
 
     @app.delete("/sessions/{session_id}")
-    async def clear_session(session_id: str) -> dict[str, str]:
+    async def clear_session(
+        session_id: str,
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, str]:
         """Clear all memories and shopping items for a session."""
-        await get_engine().clear_session(session_id)
+        validated = _validate_session_id(session_id)
+        _verify_session_access(validated, authorization)
+        await get_engine().clear_session(validated)
         return {"status": "cleared"}
 
     return app

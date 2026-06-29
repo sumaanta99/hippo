@@ -65,6 +65,10 @@ INTENT_EXAMPLES: dict[Intent, list[str]] = {
 
 def _extract_user_message(prompt: str) -> str:
     """Extract the user message portion from a classification prompt."""
+    if "<<<USER_CONTENT>>>" in prompt:
+        after = prompt.split("<<<USER_CONTENT>>>", 1)[1]
+        return after.split("<<<END_USER_CONTENT>>>", 1)[0].strip().lower()
+
     if "User message:" not in prompt:
         return prompt.strip().lower()
     after = prompt.split("User message:", 1)[1]

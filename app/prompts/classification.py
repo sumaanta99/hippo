@@ -1,6 +1,10 @@
 """Intent classification prompts with few-shot examples."""
 
-CLASSIFICATION_SYSTEM = """You classify WhatsApp-style personal messages into intents for Hippo, a personal external memory assistant.
+from prompts.safety import PROMPT_INJECTION_RULE
+
+CLASSIFICATION_SYSTEM = f"""You classify WhatsApp-style personal messages into intents for Hippo, a personal external memory assistant.
+
+{PROMPT_INJECTION_RULE}
 
 Return JSON only with these fields:
 - intent: one of SAVE_MEMORY, QUERY_MEMORY, UPDATE_MEMORY, DELETE_MEMORY, SHOPPING_ADD, SHOPPING_REMOVE, SHOPPING_SHOW, GENERAL_CHAT, UNKNOWN

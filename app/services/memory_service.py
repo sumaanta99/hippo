@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any
 
 from config import MemoryType, Settings, get_settings
@@ -40,6 +40,7 @@ from prompts import (
     UPDATE_EXTRACTION_PROMPT,
     UPDATE_NO_MATCH_RESPONSE,
 )
+from prompts.safety import wrap_memory_data, wrap_user_content
 from repositories.memory_repository import MemoryRepository
 from retriever import MemoryRetriever
 
@@ -72,7 +73,7 @@ class MemoryService:
         _ = session_id
         message = user_input.strip()
         payload = await self._complete_json(
-            SAVE_EXTRACTION_PROMPT.format(message=message)
+            SAVE_EXTRACTION_PROMPT.format(message=wrap_user_content(message))
         )
         memory_type = _parse_memory_type(payload.get("memory_type"))
         title = str(payload.get("title", "")).strip()
@@ -228,23 +229,27 @@ class MemoryService:
 
         payload = await self._complete_json(
             UPDATE_EXTRACTION_PROMPT.format(
-                message=message,
-                memories=format_memories_for_prompt(candidates),
+                message=wrap_user_content(message),
+                memories=wrap_memory_data(format_memories_for_prompt(candidates)),
             )
         )
-        memory_id = str(payload.get("memory_id", "")).strip()
-        if not memory_id:
-            memory_id = candidates[0].id
+        memory_id = _resolve_memory_id(
+            str(payload.get("memory_id", "")).strip(),
+            candidates,
+        )
+        if memory_id is None:
+            return MemoryServiceResult(text=UPDATE_NO_MATCH_RESPONSE)
 
+        target = next(memory for memory in candidates if memory.id == memory_id)
         updated = await self._repository.update(
             memory_id,
             MemoryUpdate(
-                title=str(payload.get("title", candidates[0].title)).strip(),
+                title=str(payload.get("title", target.title)).strip(),
                 content=str(payload.get("content", message)).strip(),
                 memory_type=_parse_memory_type(
-                    payload.get("memory_type", candidates[0].memory_type.value)
+                    payload.get("memory_type", target.memory_type.value)
                 ),
-                category=str(payload.get("category", candidates[0].category)).strip(),
+                category=str(payload.get("category", target.category)).strip(),
             ),
         )
         if updated is None:
@@ -267,18 +272,18 @@ class MemoryService:
 
         payload = await self._complete_json(
             DELETE_EXTRACTION_PROMPT.format(
-                message=message,
-                memories=format_memories_for_prompt(candidates),
+                message=wrap_user_content(message),
+                memories=wrap_memory_data(format_memories_for_prompt(candidates)),
             )
         )
-        memory_id = str(payload.get("memory_id", "")).strip()
-        if not memory_id:
-            memory_id = candidates[0].id
-
-        target = next(
-            (memory for memory in candidates if memory.id == memory_id),
-            candidates[0],
+        memory_id = _resolve_memory_id(
+            str(payload.get("memory_id", "")).strip(),
+            candidates,
         )
+        if memory_id is None:
+            return MemoryServiceResult(text=DELETE_NO_MATCH_RESPONSE)
+
+        target = next(memory for memory in candidates if memory.id == memory_id)
         deleted = await self._repository.delete(memory_id)
         if not deleted:
             return MemoryServiceResult(text=DELETE_NO_MATCH_RESPONSE)
@@ -338,6 +343,20 @@ class MemoryService:
             return await self._llm.complete_json(prompt)
         except LLMError as exc:
             raise MemoryServiceError(str(exc)) from exc
+
+
+def _resolve_memory_id(
+    raw_id: str,
+    candidates: Sequence[MemoryRecord],
+) -> str | None:
+    """Accept only candidate ids returned by the model."""
+    allowed = {memory.id for memory in candidates}
+    cleaned = raw_id.strip()
+    if cleaned:
+        return cleaned if cleaned in allowed else None
+    if len(candidates) == 1:
+        return candidates[0].id
+    return None
 
 
 def _parse_memory_type(value: Any) -> MemoryType:

@@ -15,7 +15,9 @@ from config import Settings, get_settings
 from json_utils import parse_json_object
 from logger import get_logger
 from memory import MemoryRecord, MemoryStore, format_memories_for_prompt
+from log_redaction import redact_for_log
 from prompts import GENERAL_CHAT_PROMPT, HIPPO_SYSTEM, QUERY_RESPONSE_PROMPT, rerank_prompt
+from prompts.safety import wrap_memory_data, wrap_user_content
 
 
 logger = get_logger(__name__)
@@ -58,28 +60,33 @@ class MemoryRetriever:
         if not cleaned_query:
             return []
 
-        logger.info(
-            "Stage 1: retrieving up to %d candidates for query=%r user=%s",
-            candidate_limit,
+        log_query = redact_for_log(
             cleaned_query,
+            structured=self._settings.structured_logging,
+        )
+
+        logger.info(
+            "Stage 1: retrieving up to %d candidates for query=%s user=%s",
+            candidate_limit,
+            log_query,
             resolved_user_id,
         )
         candidates = await self._retrieve_candidates(cleaned_query, candidate_limit)
         if not candidates:
-            logger.info("No retrieval candidates found for query=%r", cleaned_query)
+            logger.info("No retrieval candidates found for query=%s", log_query)
             return []
 
         if _is_confident_match(cleaned_query, candidates):
             logger.info(
-                "Skipping rerank for confident keyword match on query=%r",
-                cleaned_query,
+                "Skipping rerank for confident keyword match on query=%s",
+                log_query,
             )
             return candidates[:candidate_limit]
 
         logger.info(
-            "Stage 2: re-ranking %d candidates for query=%r",
+            "Stage 2: re-ranking %d candidates for query=%s",
             len(candidates),
-            cleaned_query,
+            log_query,
         )
         try:
             reranked = await self._rerank_with_llm(cleaned_query, candidates)
@@ -113,21 +120,21 @@ class MemoryRetriever:
         if not resolved_matches:
             return await self._generate_text(
                 QUERY_RESPONSE_PROMPT.format(
-                    query=query.strip(),
+                    query=wrap_user_content(query.strip()),
                     memories="(none)",
                 )
             )
 
         return await self._generate_text(
             QUERY_RESPONSE_PROMPT.format(
-                query=query.strip(),
-                memories=format_memories_for_prompt(resolved_matches),
+                query=wrap_user_content(query.strip()),
+                memories=wrap_memory_data(format_memories_for_prompt(resolved_matches)),
             )
         )
 
     async def general_chat(self, message: str) -> str:
         """Respond to casual conversation without touching memory."""
-        prompt = GENERAL_CHAT_PROMPT.format(message=message.strip())
+        prompt = GENERAL_CHAT_PROMPT.format(message=wrap_user_content(message.strip()))
         return await self._generate_text(prompt)
 
     async def _retrieve_candidates(
