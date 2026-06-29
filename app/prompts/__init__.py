@@ -27,6 +27,8 @@ QUERY_RESPONSE_PROMPT = """The user asked a question. Answer using only the memo
 If the user asks where something is, start with "Found it." then state the location or fact.
 If the user asks a general question, answer directly and concisely.
 If the user asks broadly about a person or topic, include every matching memory as separate facts.
+If the user asks for a list, collection, or plural items (resources, links, notes), include every matching item — never omit one.
+If a memory contains multiple links or bullet items, include all of them in your answer.
 If multiple memories describe the same specific fact, use the most recent one.
 If nothing matches, say you don't have that stored yet — briefly and naturally.
 Never mention searching, databases, or stored records.

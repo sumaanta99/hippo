@@ -15,10 +15,13 @@ from memory import (
     append_list_items,
     append_topic,
     extract_urls,
+    format_collection_answer,
     format_entity_answer,
     format_memories_for_prompt,
     has_new_list_items,
     is_append_request,
+    is_collection_query,
+    merge_memories,
     should_append_to_existing,
     _subject_tokens,
 )
@@ -176,6 +179,17 @@ class MemoryService:
             message,
             user_id=session_id,
         )
+        if is_collection_query(message):
+            entity_matches = await self._repository.search_by_entity(message)
+            keyword_matches = await self._repository.search(message, limit=10)
+            matches = merge_memories(matches, entity_matches, keyword_matches)
+            if matches:
+                return MemoryServiceResult(
+                    text=format_collection_answer(matches),
+                    search_results=matches,
+                )
+            return MemoryServiceResult(text=NO_MATCH_RESPONSE)
+
         try:
             answer = await self._retriever.answer_query(message, matches=matches)
         except RetrievalError:

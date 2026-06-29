@@ -35,6 +35,7 @@ Be lenient with matching. Handle these variations as matches:
 
 Note: If the user asked about "resources" but your candidate is titled "resource" — this is the same thing. Match it.
 Note: If the user asked about "pm resources" and a candidate contains PM links, match it.
+If the query uses a plural (resources, links, items) or asks to list/show all, include every matching candidate — do not pick just one.
 
 Other leniency:
 - Treat paraphrases as matches ("where's my passport" = "passport location")

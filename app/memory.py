@@ -780,6 +780,66 @@ def format_entity_answer(memories: Sequence[MemoryRecord]) -> str:
     return ". ".join(parts) + "."
 
 
+_COLLECTION_WORDS = frozenset(
+    {"resources", "links", "items", "urls", "notes", "memories", "entries"}
+)
+_COLLECTION_PHRASES = (
+    "list ",
+    "show all",
+    "all my",
+    "everything ",
+    "what are my",
+    "what are the",
+)
+
+
+def is_collection_query(query: str) -> bool:
+    """Return True when the user is asking for all items in a group."""
+    normalized = query.strip().lower().rstrip("?")
+    if not normalized:
+        return False
+    if any(phrase in normalized for phrase in _COLLECTION_PHRASES):
+        return True
+    return any(token in _COLLECTION_WORDS for token in _tokenize(normalized))
+
+
+def format_collection_answer(memories: Sequence[MemoryRecord]) -> str:
+    """List every URL or item from matching memories."""
+    if not memories:
+        return ""
+
+    urls: list[str] = []
+    for memory in memories:
+        for url in extract_urls(f"{memory.title} {memory.content}"):
+            if url not in urls:
+                urls.append(url)
+
+    if urls:
+        if len(urls) == 1:
+            return f"Found it. {urls[0]}"
+        lines = "\n".join(f"- {url}" for url in urls)
+        return f"Found it.\n{lines}"
+
+    if len(memories) == 1:
+        return f"Found it. {memories[0].content}"
+
+    lines = "\n".join(f"- {memory.content}" for memory in memories)
+    return f"Found it.\n{lines}"
+
+
+def merge_memories(*groups: Sequence[MemoryRecord]) -> list[MemoryRecord]:
+    """Merge memory groups while preserving order and uniqueness."""
+    merged: list[MemoryRecord] = []
+    seen: set[str] = set()
+    for group in groups:
+        for memory in group:
+            if memory.id in seen:
+                continue
+            seen.add(memory.id)
+            merged.append(memory)
+    return merged
+
+
 def format_memories_for_prompt(memories: Sequence[MemoryRecord]) -> str:
     """Format memories as compact text for LLM prompts."""
     if not memories:
