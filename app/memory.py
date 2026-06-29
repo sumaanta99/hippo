@@ -818,6 +818,77 @@ def format_entity_answer(memories: Sequence[MemoryRecord]) -> str:
     return ". ".join(parts) + "."
 
 
+_FIRST_PERSON_PATTERN = re.compile(
+    r"\b(I|'ve|'d|'ll|my|me|mine|myself)\b",
+    re.IGNORECASE,
+)
+
+
+def _has_first_person(text: str) -> bool:
+    """Return True when text uses first-person pronouns."""
+    return bool(_FIRST_PERSON_PATTERN.search(text))
+
+
+def to_second_person(text: str) -> str:
+    """Rewrite first-person recall phrasing into second person."""
+    detail = text.strip().rstrip(".")
+
+    def sub_word(pattern: str, replacement: str, value: str) -> str:
+        def repl(match: re.Match[str]) -> str:
+            matched = match.group(0)
+            if matched[0].isupper():
+                return replacement.capitalize()
+            return replacement
+
+        return re.sub(pattern, repl, value, flags=re.IGNORECASE)
+
+    for pattern, replacement in (
+        (r"\bI've\b", "you've"),
+        (r"\bI'd\b", "you'd"),
+        (r"\bI'll\b", "you'll"),
+        (r"\bI\b", "you"),
+        (r"\bmy\b", "your"),
+        (r"\bme\b", "you"),
+        (r"\bmine\b", "yours"),
+        (r"\bmyself\b", "yourself"),
+    ):
+        detail = sub_word(pattern, replacement, detail)
+    return detail
+
+
+_LOCATION_PHRASES = (
+    "where is",
+    "where's",
+    "where are",
+    "where did",
+    "where do",
+    "where can",
+)
+
+
+def is_location_query(query: str) -> bool:
+    """Return True when the user is asking where something is."""
+    normalized = query.strip().lower().rstrip("?")
+    return any(phrase in normalized for phrase in _LOCATION_PHRASES)
+
+
+def format_recall_answer(
+    memories: Sequence[MemoryRecord],
+    query: str | None = None,
+) -> str:
+    """Format a recall answer in natural second-person phrasing."""
+    if len(memories) == 1:
+        raw = memories[0].content.strip().rstrip(".")
+    else:
+        raw = format_entity_answer(memories).rstrip(".")
+
+    content = to_second_person(raw)
+    if query and is_location_query(query) and _has_first_person(raw):
+        return f"{content}."
+
+    return f"Found it. {content}."
+
+
 _COLLECTION_WORDS = frozenset(
     {"resources", "links", "items", "urls", "notes", "memories", "entries"}
 )
@@ -839,6 +910,86 @@ def is_collection_query(query: str) -> bool:
     if any(phrase in normalized for phrase in _COLLECTION_PHRASES):
         return True
     return any(token in _COLLECTION_WORDS for token in _tokenize(normalized))
+
+
+_SCHEDULE_WORDS = frozenset(
+    {
+        "meeting",
+        "meetings",
+        "meet",
+        "meets",
+        "appointment",
+        "appointments",
+        "schedule",
+        "scheduled",
+        "calendar",
+        "upcoming",
+        "event",
+        "events",
+    }
+)
+_SCHEDULE_PHRASES = (
+    "do i have",
+    "any upcoming",
+    "what's on",
+    "what is on",
+    "when is my",
+    "when's my",
+    "anything coming up",
+)
+
+
+def is_schedule_query(query: str) -> bool:
+    """Return True when the user is asking about upcoming meetings or events."""
+    normalized = query.strip().lower().rstrip("?")
+    if not normalized:
+        return False
+
+    tokens = set(_tokenize(normalized))
+    if not tokens & _SCHEDULE_WORDS:
+        return False
+
+    if any(phrase in normalized for phrase in _SCHEDULE_PHRASES):
+        return True
+
+    return "upcoming" in normalized or "when" in tokens or "any" in tokens
+
+
+_SCHEDULE_CONTENT_PREFIX = re.compile(
+    r"^(?:"
+    r"i(?:'ve|\s+have)?\s+(?:a\s+)?(?:meeting|appointment|call|sync)\s+"
+    r"|my\s+(?:meeting|appointment|call|sync)\s+"
+    r"|(?:a\s+)?(?:meeting|appointment|call|sync)\s+"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _schedule_detail(content: str) -> str:
+    """Strip first-person schedule phrasing so answers read naturally."""
+    detail = content.strip().rstrip(".")
+    detail = _SCHEDULE_CONTENT_PREFIX.sub("", detail).strip()
+    return detail
+
+
+def format_schedule_answer(memories: Sequence[MemoryRecord]) -> str:
+    """Answer schedule queries with 'You have a meeting...' phrasing."""
+    if not memories:
+        return ""
+
+    if len(memories) == 1:
+        detail = _schedule_detail(memories[0].content)
+        if detail:
+            return f"You have a meeting {detail}."
+        return "You have a meeting."
+
+    lines = "\n".join(
+        f"- You have a meeting {_schedule_detail(memory.content)}."
+        if _schedule_detail(memory.content)
+        else f"- {memory.content.rstrip('.')}"
+        for memory in memories
+    )
+    return f"You have upcoming meetings:\n{lines}"
 
 
 def format_collection_answer(memories: Sequence[MemoryRecord]) -> str:

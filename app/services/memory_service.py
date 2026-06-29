@@ -16,11 +16,13 @@ from memory import (
     append_topic,
     extract_urls,
     format_collection_answer,
-    format_entity_answer,
+    format_recall_answer,
+    format_schedule_answer,
     format_memories_for_prompt,
     has_new_list_items,
     is_append_request,
     is_collection_query,
+    is_schedule_query,
     merge_memories,
     should_append_to_existing,
     _subject_tokens,
@@ -191,19 +193,22 @@ class MemoryService:
             return MemoryServiceResult(text=NO_MATCH_RESPONSE)
 
         if not matches:
+            if is_schedule_query(message):
+                return MemoryServiceResult(
+                    text="You don't have any meetings coming up."
+                )
             return MemoryServiceResult(text=NO_MATCH_RESPONSE)
 
-        if len(matches) == 1:
-            answer = f"Found it. {matches[0].content}"
-        else:
-            answer = f"Found it. {format_entity_answer(matches)}"
-
-        if _looks_like_no_match(answer):
+        if is_schedule_query(message):
             return MemoryServiceResult(
-                text=format_entity_answer(matches),
+                text=format_schedule_answer(matches),
                 search_results=matches,
             )
-        return MemoryServiceResult(text=answer, search_results=matches)
+
+        return MemoryServiceResult(
+            text=format_recall_answer(matches, query=message),
+            search_results=matches,
+        )
 
     async def update_memory(self, user_input: str, session_id: str) -> MemoryServiceResult:
         """Update an existing memory identified from natural language."""
@@ -333,16 +338,6 @@ class MemoryService:
             return await self._llm.complete_json(prompt)
         except LLMError as exc:
             raise MemoryServiceError(str(exc)) from exc
-
-
-def _looks_like_no_match(answer: str) -> bool:
-    """Detect when the model ignored stored memories."""
-    normalized = answer.strip().lower()
-    return (
-        "don't have that stored" in normalized
-        or "do not have that stored" in normalized
-        or normalized == NO_MATCH_RESPONSE.lower()
-    )
 
 
 def _parse_memory_type(value: Any) -> MemoryType:
