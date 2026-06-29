@@ -1,0 +1,40 @@
+# Render Blueprint — deploy from the Render dashboard:
+# New → Blueprint → connect this repo → apply.
+#
+# After deploy, point hippo-studio's HIPPO_API_URL at the service URL.
+
+services:
+  - type: web
+    name: hippo-api
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: starter
+    region: oregon
+    healthCheckPath: /health
+    disk:
+      name: hippo-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: DATABASE_PATH
+        value: /var/data/hippo.db
+      - key: HOST
+        value: 0.0.0.0
+      - key: RELOAD
+        value: false
+      - key: LOG_LEVEL
+        value: WARNING
+      - key: STRUCTURED_LOGGING
+        value: true
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_MODEL
+        value: gpt-4o
+      - key: OPENAI_EMBEDDING_MODEL
+        value: text-embedding-3-small
+      - key: LLM_TIMEOUT_SECONDS
+        value: "30"
+      - key: HIPPO_CORS_ORIGINS
+        sync: false
+      - key: ANALYTICS_ADMIN_KEY
+        generateValue: true

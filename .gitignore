@@ -1,0 +1,20 @@
+# Secrets
+.env
+app/.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Local data
+*.db
+.coverage
+.pytest_cache/
+
+# IDE
+.DS_Store
+.idea/
+.vscode/

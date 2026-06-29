@@ -1,0 +1,14 @@
+[run]
+source = app
+omit =
+    app/tests/*
+    app/cleanup.py
+    app/main.py
+    app/memory.py
+    app/embeddings.py
+    app/retriever.py
+    app/llm_client.py
+
+[report]
+exclude_lines =
+    pragma: no cover

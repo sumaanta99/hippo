@@ -1,0 +1,12 @@
+.venv
+.env
+.env.*
+!.env.example
+*.db
+__pycache__
+.pytest_cache
+.coverage
+.coveragerc
+.git
+.gitignore
+*.md
