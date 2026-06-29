@@ -142,6 +142,26 @@ async def test_delete_archives_memory(memory_service: MemoryService, memory_repo
 
 
 @pytest.mark.asyncio
+async def test_update_without_existing_memory_falls_back_to_save(
+    memory_service: MemoryService,
+    memory_repo,
+) -> None:
+    """Update requests with no matching memory should save instead of failing."""
+    memory_service._repository.search = AsyncMock(return_value=[])
+    memory_service._repository.search_by_entity = AsyncMock(return_value=[])
+
+    response = await memory_service.update_memory(
+        "my passport is in the locker",
+        "test_user",
+    )
+
+    assert response.text == SAVE_CONFIRM_RESPONSE
+    assert len(response.created) == 1
+    assert "passport" in response.created[0].title.lower()
+    assert await memory_repo.list_active()
+
+
+@pytest.mark.asyncio
 async def test_query_no_match(memory_service: MemoryService) -> None:
     """Queries with no matches should return the standard no-match response."""
     memory_service._retriever.retrieve_and_rerank = AsyncMock(return_value=[])

@@ -17,6 +17,8 @@ Important rules:
 - Short topic labels like "passport" or "pm resources" are QUERY_MEMORY
 - "pm resources" (plural) querying stored "pm resource" (singular) is still QUERY_MEMORY
 - Corrections like "passport is now in the locker" are UPDATE_MEMORY
+- "my passport is in the locker" or "passport is in the locker" (first-time save) are SAVE_MEMORY
+- UPDATE_MEMORY requires correction language (now, changed, updated, moved) or clearly revising a prior fact
 - "forget X" or "delete X" about a stored fact is DELETE_MEMORY
 - "forget X from shopping" or "remove X" from a shopping context is SHOPPING_REMOVE
 - "buy eggs", "need milk", "add detergent" are SHOPPING_ADD
@@ -36,6 +38,8 @@ SAVE_MEMORY:
 - "rajesh is our electrician" → SAVE_MEMORY
 - "pm resource https://example.com/link" → SAVE_MEMORY
 - "chirag birthday may 20" → SAVE_MEMORY
+- "my passport is in the locker" → SAVE_MEMORY
+- "passport is in the locker" → SAVE_MEMORY
 
 QUERY_MEMORY:
 - "where's my passport" → QUERY_MEMORY

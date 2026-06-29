@@ -203,7 +203,11 @@ class MemoryService:
             candidates = entity_candidates[:5]
 
         if not candidates:
-            return MemoryServiceResult(text=UPDATE_NO_MATCH_RESPONSE)
+            logger.info(
+                "No memory matched for update %r; falling back to save.",
+                message,
+            )
+            return await self.save_memory(user_input, session_id)
 
         payload = await self._complete_json(
             UPDATE_EXTRACTION_PROMPT.format(
