@@ -86,7 +86,7 @@ async def test_query_calls_status_callback(memory_service: MemoryService, memory
         "test_user",
         on_status=statuses.append,
     )
-    assert statuses == ["asking the ducks..."]
+    assert statuses == ["checking with the ducks..."]
 
 
 @pytest.mark.asyncio
