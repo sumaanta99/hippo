@@ -101,8 +101,8 @@ async def test_rerank_failure_falls_back_to_candidates(memory_repo, test_setting
 
 @pytest.mark.asyncio
 async def test_rerank_confidence_threshold(memory_repo, test_settings) -> None:
-    """Low-confidence rerank results should be treated as empty."""
-    await memory_repo.create(
+    """Confident keyword matches should skip reranking and return results directly."""
+    created = await memory_repo.create(
         make_memory("Passport location", "Passport is in the locker.", MemoryType.OBJECT_LOCATION)
     )
     retriever = MemoryRetriever(memory_repo.store, test_settings)
@@ -112,4 +112,5 @@ async def test_rerank_confidence_threshold(memory_repo, test_settings) -> None:
         user_id=test_settings.user_id,
         top_k=5,
     )
-    assert results == []
+    assert len(results) == 1
+    assert results[0].id == created.id

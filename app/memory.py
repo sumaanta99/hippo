@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -187,8 +188,12 @@ class MemoryStore:
             )
             await db.commit()
 
-        await self._store_embedding(record.id, record.title, record.content)
+        self._schedule_embedding(record.id, record.title, record.content)
         return record
+
+    def _schedule_embedding(self, memory_id: str, title: str, content: str) -> None:
+        """Generate and store an embedding without blocking the caller."""
+        asyncio.create_task(self._store_embedding(memory_id, title, content))
 
     async def _store_embedding(self, memory_id: str, title: str, content: str) -> None:
         """Generate and persist an embedding for a memory."""
@@ -212,6 +217,36 @@ class MemoryStore:
                 (json.dumps(vector), memory_id, self._settings.user_id),
             )
             await db.commit()
+
+    async def _load_embeddings_batch(
+        self, memory_ids: Sequence[str]
+    ) -> dict[str, list[float]]:
+        """Load embedding vectors for many memories in one query."""
+        if not memory_ids:
+            return {}
+
+        placeholders = ",".join("?" for _ in memory_ids)
+        async with aiosqlite.connect(self._db_path) as db:
+            cursor = await db.execute(
+                f"""
+                SELECT id, embedding FROM memories
+                WHERE user_id = ? AND is_archived = 0 AND id IN ({placeholders})
+                """,
+                (self._settings.user_id, *memory_ids),
+            )
+            rows = await cursor.fetchall()
+
+        vectors: dict[str, list[float]] = {}
+        for memory_id, raw in rows:
+            if not raw:
+                continue
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(parsed, list):
+                vectors[str(memory_id)] = [float(value) for value in parsed]
+        return vectors
 
     async def _load_embedding(self, memory_id: str) -> list[float] | None:
         """Load a stored embedding vector for a memory."""
@@ -305,7 +340,7 @@ class MemoryStore:
             )
             await db.commit()
 
-        await self._store_embedding(memory_id, updated.title, updated.content)
+        self._schedule_embedding(memory_id, updated.title, updated.content)
         return updated
 
     async def delete(self, memory_id: str) -> bool:
@@ -364,13 +399,16 @@ class MemoryStore:
             return await self.search(query, limit=top_k)
 
         memories = await self.list_active()
+        if not memories:
+            return []
+
+        stored_vectors = await self._load_embeddings_batch(
+            [memory.id for memory in memories]
+        )
         scored: list[tuple[float, MemoryRecord]] = []
 
         for memory in memories:
-            vector = await self._load_embedding(memory.id)
-            if vector is None:
-                await self._store_embedding(memory.id, memory.title, memory.content)
-                vector = await self._load_embedding(memory.id)
+            vector = stored_vectors.get(memory.id)
             if vector is None:
                 continue
 

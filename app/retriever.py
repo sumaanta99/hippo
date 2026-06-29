@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import re
 import time
-from typing import Any, Sequence
+from typing import Sequence
 
 from openai import AsyncOpenAI, APITimeoutError, OpenAIError
 from pydantic import BaseModel, Field
@@ -67,6 +69,13 @@ class MemoryRetriever:
             logger.info("No retrieval candidates found for query=%r", cleaned_query)
             return []
 
+        if _is_confident_match(cleaned_query, candidates):
+            logger.info(
+                "Skipping rerank for confident keyword match on query=%r",
+                cleaned_query,
+            )
+            return candidates[:candidate_limit]
+
         logger.info(
             "Stage 2: re-ranking %d candidates for query=%r",
             len(candidates),
@@ -126,14 +135,16 @@ class MemoryRetriever:
         query: str,
         top_k: int,
     ) -> list[MemoryRecord]:
-        """Stage 1: gather semantic and keyword candidates."""
-        semantic = await self._memory_store.semantic_search(
-            query,
-            user_id=self._settings.user_id,
-            top_k=top_k,
+        """Stage 1: gather semantic and keyword candidates in parallel."""
+        semantic, keyword, entity = await asyncio.gather(
+            self._memory_store.semantic_search(
+                query,
+                user_id=self._settings.user_id,
+                top_k=top_k,
+            ),
+            self._memory_store.search(query, limit=top_k),
+            self._memory_store.search_by_entity(query),
         )
-        keyword = await self._memory_store.search(query, limit=top_k)
-        entity = await self._memory_store.search_by_entity(query)
         return _merge_candidates(semantic, keyword, entity, top_k)
 
     async def _rerank_with_llm(
@@ -241,3 +252,58 @@ def _merge_candidates(
             break
 
     return merged
+
+
+_RERANK_SKIP_STOPWORDS = frozenset(
+    {
+        "the",
+        "a",
+        "an",
+        "is",
+        "in",
+        "on",
+        "at",
+        "to",
+        "of",
+        "my",
+        "where",
+        "what",
+        "how",
+        "are",
+        "was",
+        "do",
+        "did",
+    }
+)
+
+
+def _query_tokens(query: str) -> list[str]:
+    """Extract meaningful tokens from a retrieval query."""
+    return [
+        token
+        for token in re.findall(r"[a-z0-9]+", query.lower())
+        if len(token) > 1 and token not in _RERANK_SKIP_STOPWORDS
+    ]
+
+
+def _is_confident_match(query: str, candidates: Sequence[MemoryRecord]) -> bool:
+    """Return True when keyword-style matches are strong enough to skip reranking."""
+    if not candidates or len(candidates) > 3:
+        return False
+
+    tokens = _query_tokens(query)
+    if not tokens:
+        return False
+
+    haystacks = [
+        f"{memory.title} {memory.content}".lower() for memory in candidates
+    ]
+    if len(candidates) == 1:
+        matches = sum(1 for token in tokens if token in haystacks[0])
+        return matches >= max(1, len(tokens) // 2)
+
+    if len(candidates) <= 3:
+        shared_subject = tokens[0]
+        return all(shared_subject in haystack for haystack in haystacks)
+
+    return False

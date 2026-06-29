@@ -39,7 +39,7 @@ from prompts import (
     UPDATE_NO_MATCH_RESPONSE,
 )
 from repositories.memory_repository import MemoryRepository
-from retriever import MemoryRetriever, RetrievalError
+from retriever import MemoryRetriever
 
 
 logger = logging.getLogger(__name__)
@@ -190,17 +190,15 @@ class MemoryService:
                 )
             return MemoryServiceResult(text=NO_MATCH_RESPONSE)
 
-        try:
-            answer = await self._retriever.answer_query(message, matches=matches)
-        except RetrievalError:
-            if not matches:
-                return MemoryServiceResult(text=NO_MATCH_RESPONSE)
-            return MemoryServiceResult(
-                text=format_entity_answer(matches),
-                search_results=matches,
-            )
+        if not matches:
+            return MemoryServiceResult(text=NO_MATCH_RESPONSE)
 
-        if matches and _looks_like_no_match(answer):
+        if len(matches) == 1:
+            answer = f"Found it. {matches[0].content}"
+        else:
+            answer = f"Found it. {format_entity_answer(matches)}"
+
+        if _looks_like_no_match(answer):
             return MemoryServiceResult(
                 text=format_entity_answer(matches),
                 search_results=matches,
