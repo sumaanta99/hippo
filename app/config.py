@@ -12,6 +12,13 @@ from constants import DEFAULT_MAX_INPUT_LENGTH
 _APP_DIR = Path(__file__).resolve().parent
 
 
+class WhatsAppProvider(StrEnum):
+    """Supported WhatsApp Business API providers."""
+
+    META = "meta"
+    TWILIO = "twilio"
+
+
 class Intent(StrEnum):
     """Supported user message intents."""
 
@@ -106,6 +113,30 @@ class Settings(BaseSettings):
             "CHAT_RATE_LIMIT_PER_SESSION",
             "chat_rate_limit_per_session",
         ),
+    )
+    whatsapp_provider: WhatsAppProvider = Field(
+        default=WhatsAppProvider.META,
+        validation_alias=AliasChoices("WHATSAPP_PROVIDER", "whatsapp_provider"),
+    )
+    whatsapp_webhook_secret: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("WHATSAPP_WEBHOOK_SECRET", "whatsapp_webhook_secret"),
+    )
+    whatsapp_phone_number_id: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("WHATSAPP_PHONE_NUMBER_ID", "whatsapp_phone_number_id"),
+    )
+    whatsapp_access_token: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("WHATSAPP_ACCESS_TOKEN", "whatsapp_access_token"),
+    )
+    twilio_account_sid: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("TWILIO_ACCOUNT_SID", "twilio_account_sid"),
+    )
+    whatsapp_studio_url: str = Field(
+        default="https://hippostudio.netlify.app",
+        validation_alias=AliasChoices("WHATSAPP_STUDIO_URL", "whatsapp_studio_url"),
     )
 
     @model_validator(mode="after")

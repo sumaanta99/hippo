@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import secrets
 import time
 from collections import defaultdict
@@ -11,8 +12,17 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from analytics_store import AnalyticsPayload, UsageAnalyticsStore, UsageReport
-from config import get_settings
+from config import WhatsAppProvider, get_settings
 from engine.hippo_engine import HippoEngine
+from handlers.whatsapp import (
+    parse_meta_payload,
+    parse_twilio_payload,
+    process_whatsapp_message,
+    verify_meta_signature,
+    verify_twilio_signature,
+)
+from log_redaction import redact_phone_for_log
+from logger import get_logger
 from models.responses import ChatResponse, MemorySnapshot, SessionStats
 from session_auth import create_session_id, sign_session_token, verify_session_token
 
@@ -20,7 +30,7 @@ try:
     from fastapi import Depends, FastAPI, Header, HTTPException, Request
     from fastapi.middleware.cors import CORSMiddleware
     from starlette.middleware.base import BaseHTTPMiddleware
-    from starlette.responses import JSONResponse
+    from starlette.responses import JSONResponse, PlainTextResponse, Response
 except ImportError:  # pragma: no cover - optional dependency
     Depends = None  # type: ignore[misc, assignment]
     FastAPI = None  # type: ignore[misc, assignment]
@@ -28,6 +38,8 @@ except ImportError:  # pragma: no cover - optional dependency
     CORSMiddleware = None  # type: ignore[misc, assignment]
     BaseHTTPMiddleware = None  # type: ignore[misc, assignment]
     JSONResponse = None  # type: ignore[misc, assignment]
+    PlainTextResponse = None  # type: ignore[misc, assignment]
+    Response = None  # type: ignore[misc, assignment]
     Request = None  # type: ignore[misc, assignment]
 
 
@@ -55,6 +67,7 @@ _engine: HippoEngine | None = None
 _analytics: UsageAnalyticsStore | None = None
 _rate_buckets: dict[str, list[float]] = defaultdict(list)
 _session_rate_buckets: dict[str, list[float]] = defaultdict(list)
+_webhook_logger = get_logger(__name__)
 
 
 def get_engine() -> HippoEngine:
@@ -288,5 +301,67 @@ def create_app() -> Any:
         _verify_session_access(validated, authorization)
         await get_engine().clear_session(validated)
         return {"status": "cleared"}
+
+    @app.get("/whatsapp/webhook")
+    async def whatsapp_webhook_verify(
+        request: Request,
+    ) -> PlainTextResponse:
+        """Meta webhook verification challenge (GET)."""
+        params = request.query_params
+        mode = params.get("hub.mode")
+        token = params.get("hub.verify_token")
+        challenge = params.get("hub.challenge", "")
+
+        secret = settings.whatsapp_webhook_secret
+        if mode == "subscribe" and secret and token == secret:
+            return PlainTextResponse(content=challenge)
+        raise HTTPException(status_code=403, detail="Verification failed.")
+
+    @app.post("/whatsapp/webhook")
+    async def whatsapp_webhook(request: Request) -> Response:
+        """Receive inbound WhatsApp messages from Meta or Twilio."""
+        provider = settings.whatsapp_provider
+        secret = settings.whatsapp_webhook_secret
+
+        if provider == WhatsAppProvider.META:
+            body = await request.body()
+            if secret and not verify_meta_signature(
+                body,
+                request.headers.get("X-Hub-Signature-256"),
+                secret,
+            ):
+                raise HTTPException(status_code=403, detail="Invalid signature.")
+
+            payload = json.loads(body)
+            incoming = parse_meta_payload(payload)
+        else:
+            form = {key: str(value) for key, value in (await request.form()).multi_items()}
+            if secret:
+                auth_token = settings.whatsapp_access_token or secret
+                if not verify_twilio_signature(
+                    str(request.url),
+                    form,
+                    request.headers.get("X-Twilio-Signature"),
+                    auth_token,
+                ):
+                    raise HTTPException(status_code=403, detail="Invalid signature.")
+            incoming = parse_twilio_payload(form)
+
+        if incoming is None:
+            return Response(status_code=200)
+
+        try:
+            await process_whatsapp_message(incoming, get_engine(), settings)
+        except Exception as exc:
+            _webhook_logger.error(
+                "WhatsApp message processing failed.",
+                error_type=type(exc).__name__,
+                phone=redact_phone_for_log(incoming.sender_phone),
+                message_id=incoming.message_id,
+                exc=exc,
+            )
+            raise HTTPException(status_code=500, detail="Processing failed.") from exc
+
+        return Response(status_code=200)
 
     return app
