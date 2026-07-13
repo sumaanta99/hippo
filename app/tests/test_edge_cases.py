@@ -37,13 +37,21 @@ async def test_classifier_api_failure_returns_fallback(test_settings) -> None:
     """Classifier API failures should return the API failure response."""
 
     class FailingLLM(MockLLMClient):
-        async def complete_json(self, prompt: str, *, system: str | None = None) -> dict:
+        async def complete_json(
+            self,
+            prompt: str,
+            *,
+            system: str | None = None,
+            max_tokens: int = 256,
+            model: str | None = None,
+        ) -> dict:
+            _ = max_tokens, model
             raise LLMError("Request timed out.")
 
     engine = HippoEngine(test_settings)
     engine._classifier = IntentClassifier(FailingLLM(test_settings), test_settings)
     await engine.initialize()
-    result = await engine.chat("buy eggs", "session-1")
+    result = await engine.chat("xyzabcqwertyuiop", "session-1")
     assert result.response == API_FAILURE_RESPONSE
 
 
@@ -75,7 +83,7 @@ async def test_unknown_without_matches_returns_rephrase(test_settings) -> None:
     engine = HippoEngine(test_settings)
     engine._classifier = IntentClassifier(llm, test_settings)
     await engine.initialize()
-    result = await engine.chat("xyzabc-nomatch-12345", "session-1")
+    result = await engine.chat("xyzabcqwertyuiop", "session-1")
     assert result.response == UNKNOWN_RESPONSE
 
 

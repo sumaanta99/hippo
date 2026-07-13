@@ -76,11 +76,10 @@ class MemoryRetriever:
             logger.info("No retrieval candidates found for query=%s", log_query)
             return []
 
-        if _is_confident_match(cleaned_query, candidates):
-            logger.info(
-                "Skipping rerank for confident keyword match on query=%s",
-                log_query,
-            )
+        if not self._settings.enable_rerank_llm or _is_confident_match(
+            cleaned_query, candidates
+        ):
+            logger.info("Skipping rerank for query=%s (fast path)", log_query)
             return candidates[:candidate_limit]
 
         logger.info(
@@ -142,15 +141,21 @@ class MemoryRetriever:
         query: str,
         top_k: int,
     ) -> list[MemoryRecord]:
-        """Stage 1: gather semantic and keyword candidates in parallel."""
-        semantic, keyword, entity = await asyncio.gather(
-            self._memory_store.semantic_search(
-                query,
-                user_id=self._settings.user_id,
-                top_k=top_k,
-            ),
+        """Stage 1: keyword/entity first, semantic only when needed."""
+        keyword, entity = await asyncio.gather(
             self._memory_store.search(query, limit=top_k),
             self._memory_store.search_by_entity(query),
+        )
+        keyword_matches = _merge_candidates([], keyword, entity, top_k)
+        if keyword_matches and (
+            _is_confident_match(query, keyword_matches) or len(keyword_matches) <= 2
+        ):
+            return keyword_matches
+
+        semantic = await self._memory_store.semantic_search(
+            query,
+            user_id=self._settings.user_id,
+            top_k=top_k,
         )
         return _merge_candidates(semantic, keyword, entity, top_k)
 
@@ -295,7 +300,7 @@ def _query_tokens(query: str) -> list[str]:
 
 def _is_confident_match(query: str, candidates: Sequence[MemoryRecord]) -> bool:
     """Return True when keyword-style matches are strong enough to skip reranking."""
-    if not candidates or len(candidates) > 3:
+    if not candidates or len(candidates) > 5:
         return False
 
     tokens = _query_tokens(query)
@@ -309,8 +314,5 @@ def _is_confident_match(query: str, candidates: Sequence[MemoryRecord]) -> bool:
         matches = sum(1 for token in tokens if token in haystacks[0])
         return matches >= max(1, len(tokens) // 2)
 
-    if len(candidates) <= 3:
-        shared_subject = tokens[0]
-        return all(shared_subject in haystack for haystack in haystacks)
-
-    return False
+    shared_subject = tokens[0]
+    return all(shared_subject in haystack for haystack in haystacks)

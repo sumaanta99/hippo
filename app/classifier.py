@@ -67,6 +67,26 @@ class IntentClassifier:
                 reasoning="Empty message.",
             )
 
+        from fast_router import try_fast_classify
+
+        fast = try_fast_classify(message)
+        if fast is not None:
+            intent, confidence, reasoning = fast
+            result = ClassificationResult(
+                intent=intent,
+                confidence=confidence,
+                reasoning=reasoning,
+            )
+            logger.log_event(
+                "intent_classified",
+                intent=result.intent.value,
+                confidence=result.confidence,
+                latency_ms=0.0,
+                reasoning=result.reasoning,
+                fast_path=True,
+            )
+            return result
+
         prompt = CLASSIFICATION_PROMPT.format(message=wrap_user_content(message))
         started = time.perf_counter()
 
@@ -74,6 +94,7 @@ class IntentClassifier:
             payload = await self._llm.complete_json(
                 prompt,
                 system=CLASSIFICATION_SYSTEM,
+                max_tokens=120,
             )
         except LLMError as exc:
             logger.error(

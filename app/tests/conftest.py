@@ -57,8 +57,11 @@ class MockLLMClient(LLMClient):
         prompt: str,
         *,
         system: str | None = None,
+        max_tokens: int = 256,
+        model: str | None = None,
     ) -> dict[str, Any]:
         """Return a configured JSON payload for the given prompt."""
+        _ = max_tokens, model
         self.json_calls.append(prompt)
         if self.json_handler is not None:
             result = self.json_handler(prompt, system=system)
@@ -70,8 +73,16 @@ class MockLLMClient(LLMClient):
                 return payload
         return self.json_responses.get("__default__", {})
 
-    async def complete_text(self, prompt: str, *, temperature: float = 0.4) -> str:
+    async def complete_text(
+        self,
+        prompt: str,
+        *,
+        temperature: float = 0.4,
+        max_tokens: int = 120,
+        model: str | None = None,
+    ) -> str:
         """Return a configured text payload for the given prompt."""
+        _ = max_tokens, model
         self.text_calls.append(prompt)
         if self.text_handler is not None:
             result = self.text_handler(prompt, temperature=temperature)

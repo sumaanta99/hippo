@@ -59,8 +59,12 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("OPENAI_API_KEY", "openai_api_key"),
     )
     openai_model: str = Field(
-        default="gpt-4o",
+        default="gpt-4o-mini",
         validation_alias=AliasChoices("OPENAI_MODEL", "openai_model"),
+    )
+    openai_fast_model: str = Field(
+        default="gpt-4o-mini",
+        validation_alias=AliasChoices("OPENAI_FAST_MODEL", "openai_fast_model"),
     )
     embedding_model: str = Field(
         default="text-embedding-3-small",
@@ -82,6 +86,10 @@ class Settings(BaseSettings):
     max_retrieval_results: int = 5
     semantic_search_top_k: int = 10
     rerank_confidence_threshold: float = 0.4
+    enable_rerank_llm: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("ENABLE_RERANK_LLM", "enable_rerank_llm"),
+    )
     max_input_length: int = DEFAULT_MAX_INPUT_LENGTH
     log_level: str = Field(
         default="WARNING",

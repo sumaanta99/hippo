@@ -221,9 +221,17 @@ async def test_classifier_api_failure_raises(test_settings) -> None:
     """LLM failures should surface as ClassificationError."""
 
     class FailingLLM(MockLLMClient):
-        async def complete_json(self, prompt: str, *, system: str | None = None) -> dict:
+        async def complete_json(
+            self,
+            prompt: str,
+            *,
+            system: str | None = None,
+            max_tokens: int = 256,
+            model: str | None = None,
+        ) -> dict:
+            _ = max_tokens, model
             raise LLMError("Request timed out.")
 
     classifier = IntentClassifier(FailingLLM(test_settings), test_settings)
     with pytest.raises(ClassificationError):
-        await classifier.classify_intent("buy eggs", "test_user")
+        await classifier.classify_intent("xyzabc nonsense phrase here", "test_user")

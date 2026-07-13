@@ -33,6 +33,8 @@ class LLMClient:
         prompt: str,
         *,
         system: str | None = None,
+        max_tokens: int = 256,
+        model: str | None = None,
     ) -> dict[str, Any]:
         """Request structured JSON output from the language model.
 
@@ -48,15 +50,17 @@ class LLMClient:
         """
         system_content = system or HIPPO_SYSTEM
         started = time.perf_counter()
+        resolved_model = model or self._settings.openai_fast_model
         try:
             response = await self._client.chat.completions.create(
-                model=self._settings.openai_model,
+                model=resolved_model,
                 messages=[
                     {"role": "system", "content": system_content},
                     {"role": "user", "content": prompt},
                 ],
                 response_format={"type": "json_object"},
                 temperature=0,
+                max_tokens=max_tokens,
                 timeout=self._settings.llm_timeout_seconds,
             )
         except APITimeoutError as exc:
@@ -101,7 +105,14 @@ class LLMClient:
             )
             raise LLMError("Invalid JSON from language model.") from exc
 
-    async def complete_text(self, prompt: str, *, temperature: float = 0.4) -> str:
+    async def complete_text(
+        self,
+        prompt: str,
+        *,
+        temperature: float = 0.4,
+        max_tokens: int = 120,
+        model: str | None = None,
+    ) -> str:
         """Generate a natural-language response from the language model.
 
         Args:
@@ -115,14 +126,16 @@ class LLMClient:
             LLMError: When the request fails or returns empty content.
         """
         started = time.perf_counter()
+        resolved_model = model or self._settings.openai_fast_model
         try:
             response = await self._client.chat.completions.create(
-                model=self._settings.openai_model,
+                model=resolved_model,
                 messages=[
                     {"role": "system", "content": HIPPO_SYSTEM},
                     {"role": "user", "content": prompt},
                 ],
                 temperature=temperature,
+                max_tokens=max_tokens,
                 timeout=self._settings.llm_timeout_seconds,
             )
         except APITimeoutError as exc:

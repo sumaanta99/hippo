@@ -122,7 +122,7 @@ class MemoryStore:
             )
             await db.commit()
 
-        await self.backfill_embeddings()
+        asyncio.create_task(self.backfill_embeddings())
 
     async def _ensure_embedding_column(self, db: aiosqlite.Connection) -> None:
         """Add the embedding column to older databases."""
