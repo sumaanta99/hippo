@@ -332,7 +332,11 @@ def create_app() -> Any:
             ):
                 raise HTTPException(status_code=403, detail="Invalid signature.")
 
-            payload = json.loads(body)
+            try:
+                payload = json.loads(body)
+            except json.JSONDecodeError:
+                _webhook_logger.warning("WhatsApp webhook received invalid JSON.")
+                return Response(status_code=200)
             incoming = parse_meta_payload(payload)
         else:
             form = {key: str(value) for key, value in (await request.form()).multi_items()}

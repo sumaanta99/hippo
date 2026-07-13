@@ -126,3 +126,22 @@ def test_whatsapp_webhook_post_rejects_bad_signature(client: TestClient) -> None
         },
     )
     assert response.status_code == 403
+
+
+def test_whatsapp_webhook_post_ignores_invalid_json(client: TestClient) -> None:
+    """Malformed JSON should ack 200 so Meta does not retry."""
+    body = b"not-json"
+    with patch(
+        "api.server.process_whatsapp_message",
+        new_callable=AsyncMock,
+    ) as mock_process:
+        response = client.post(
+            "/whatsapp/webhook",
+            content=body,
+            headers={
+                "Content-Type": "application/json",
+                "X-Hub-Signature-256": _meta_signature(body),
+            },
+        )
+    assert response.status_code == 200
+    mock_process.assert_not_called()

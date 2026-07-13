@@ -16,6 +16,7 @@ from handlers.whatsapp import (
     parse_meta_payload,
     parse_twilio_payload,
     process_whatsapp_message,
+    resolve_whatsapp_session_secret,
     session_id_for_phone,
     verify_meta_signature,
     verify_twilio_signature,
@@ -196,3 +197,34 @@ async def test_process_whatsapp_message_calls_engine_and_sends(test_settings) ->
     mock_send.assert_awaited_once()
     assert result.intent == "recall"
     assert mock_send.call_args[0][1] == "Your coffee order is a flat white."
+
+
+def test_resolve_whatsapp_session_secret_requires_configured_secret(
+    test_settings,
+) -> None:
+    """WhatsApp session mapping must not fall back to a predictable dev secret."""
+    test_settings.whatsapp_webhook_secret = None
+    test_settings.session_secret = None
+
+    with pytest.raises(RuntimeError, match="WHATSAPP_WEBHOOK_SECRET"):
+        resolve_whatsapp_session_secret(test_settings)
+
+
+@pytest.mark.asyncio
+async def test_process_whatsapp_message_requires_session_secret(
+    test_settings,
+) -> None:
+    """Processing should fail when no webhook or session secret is configured."""
+    test_settings.whatsapp_webhook_secret = None
+    test_settings.session_secret = None
+    incoming = IncomingWhatsAppMessage(
+        sender_phone="+14155551234",
+        message_text="hello",
+        message_id="wamid.test",
+    )
+    mock_engine = AsyncMock()
+
+    with pytest.raises(RuntimeError, match="WHATSAPP_WEBHOOK_SECRET"):
+        await process_whatsapp_message(incoming, mock_engine, test_settings)
+
+    mock_engine.chat.assert_not_called()

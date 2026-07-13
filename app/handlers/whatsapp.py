@@ -49,6 +49,16 @@ def session_id_for_phone(phone_number: str, secret: str) -> str:
     return f"whatsapp-{digest}"
 
 
+def resolve_whatsapp_session_secret(settings: Settings) -> str:
+    """Return the secret used to derive WhatsApp session ids."""
+    secret = settings.whatsapp_webhook_secret or settings.session_secret
+    if not secret:
+        raise RuntimeError(
+            "WHATSAPP_WEBHOOK_SECRET or HIPPO_SESSION_SECRET is required for WhatsApp."
+        )
+    return secret
+
+
 def _normalize_phone(phone: str) -> str:
     """Strip provider prefixes and keep digits only."""
     cleaned = phone.strip().removeprefix("whatsapp:").lstrip("+")
@@ -209,7 +219,7 @@ async def process_whatsapp_message(
 ) -> ChatResponse:
     """Route an inbound WhatsApp message through HippoEngine and send the reply."""
     resolved = settings or get_settings()
-    secret = resolved.whatsapp_webhook_secret or resolved.session_secret or "dev-secret"
+    secret = resolve_whatsapp_session_secret(resolved)
     session_id = session_id_for_phone(incoming.sender_phone, secret)
     redacted_phone = redact_phone_for_log(incoming.sender_phone)
 
