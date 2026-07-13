@@ -18,6 +18,8 @@ from fast_router import try_fast_classify
         ("remove eggs", Intent.SHOPPING_REMOVE),
         ("bought eggs", Intent.SHOPPING_REMOVE),
         ("got the milk", Intent.SHOPPING_REMOVE),
+        ("empty shopping list", Intent.SHOPPING_REMOVE),
+        ("clear my shopping list", Intent.SHOPPING_REMOVE),
         ("forget passport", Intent.DELETE_MEMORY),
         ("passport is now in the locker", Intent.UPDATE_MEMORY),
         ("my passport is in the blue drawer", Intent.SAVE_MEMORY),

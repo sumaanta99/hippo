@@ -96,3 +96,24 @@ async def test_duplicate_add_does_not_duplicate(shopping_repo, test_settings) ->
     items = await shopping_repo.list_active()
     assert len(items) == 1
     assert items[0].item == "eggs"
+
+
+@pytest.mark.asyncio
+async def test_clear_list_removes_all_items(shopping_service: ShoppingService) -> None:
+    """Clear-list phrasing should remove every shopping item."""
+    await shopping_service.add_item("buy eggs", "test_user")
+    await shopping_service.add_item("need milk", "test_user")
+    response = await shopping_service.clear_list("test_user")
+    assert response.text == "Cleared your shopping list."
+    show = await shopping_service.show_list("test_user")
+    assert show.text == "Your shopping list is empty."
+
+
+@pytest.mark.asyncio
+async def test_empty_list_phrasing_clears_via_remove_item(
+    shopping_service: ShoppingService,
+) -> None:
+    """Remove handler should detect clear-list requests."""
+    await shopping_service.add_item("buy bread", "test_user")
+    response = await shopping_service.remove_item("empty shopping list", "test_user")
+    assert response.text == "Cleared your shopping list."

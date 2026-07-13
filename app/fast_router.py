@@ -46,6 +46,12 @@ _SHOPPING_SHOW = re.compile(
     re.IGNORECASE,
 )
 
+_SHOPPING_CLEAR = re.compile(
+    r"^(?:empty|clear|wipe|reset)(?:\s+out)?(?:\s+(?:my|the))?(?:\s+shopping)?\s+list\b|"
+    r"^clear\s+(?:the\s+)?shopping\s+list\b",
+    re.IGNORECASE,
+)
+
 _SHOPPING_REMOVE = re.compile(
     r"^(?:remove|drop|take\s+off|bought|got|picked\s+up)(?:\s+the)?\s+\w|"
     r"(?:no\s+more|don't\s+need)\s+\w|"
@@ -103,6 +109,9 @@ def try_fast_classify(message: str) -> tuple[Intent, float, str] | None:
     if _SHOPPING_REMOVE.search(cleaned):
         return _result(Intent.SHOPPING_REMOVE, "Shopping list removal.")
 
+    if _SHOPPING_CLEAR.search(cleaned):
+        return _result(Intent.SHOPPING_REMOVE, "Clear shopping list.")
+
     if _SHOPPING_ADD.search(cleaned):
         return _result(Intent.SHOPPING_ADD, "Shopping list addition.")
 
@@ -123,7 +132,12 @@ def try_fast_classify(message: str) -> tuple[Intent, float, str] | None:
 
     lowered = cleaned.lower()
     tokens = [token for token in re.findall(r"[a-z0-9']+", lowered) if len(token) > 1]
-    if 2 <= len(tokens) <= 3 and "?" not in cleaned and not _SHOPPING_ADD.search(cleaned):
+    if (
+        2 <= len(tokens) <= 3
+        and "?" not in cleaned
+        and not _SHOPPING_ADD.search(cleaned)
+        and not ("shopping" in lowered and "list" in lowered)
+    ):
         return _result(Intent.QUERY_MEMORY, "Short lookup phrase.")
 
     return None

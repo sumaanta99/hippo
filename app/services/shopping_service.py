@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 
 from config import Settings, get_settings
 from llm_client import LLMClient, LLMError
@@ -19,6 +20,14 @@ from shopping import ShoppingItemCreate, format_shopping_for_prompt
 
 
 logger = logging.getLogger(__name__)
+
+_CLEAR_LIST = re.compile(
+    r"^(?:empty|clear|wipe|reset)(?:\s+out)?(?:\s+(?:my|the))?(?:\s+shopping)?\s+list\b|"
+    r"^clear\s+(?:the\s+)?shopping\s+list\b",
+    re.IGNORECASE,
+)
+
+SHOPPING_CLEARED_RESPONSE = "Cleared your shopping list."
 
 
 class ShoppingServiceError(Exception):
@@ -73,6 +82,9 @@ class ShoppingService:
         """Extract item(s) from natural language and remove them from the shopping list."""
         _ = session_id
         message = user_input.strip()
+        if _CLEAR_LIST.search(message):
+            return await self.clear_list(session_id)
+
         current_items = await self._repository.list_active()
         payload = await self._complete_json(
             SHOPPING_REMOVE_PROMPT.format(
@@ -109,6 +121,19 @@ class ShoppingService:
             return ShoppingServiceResult(text=SHOPPING_EMPTY_RESPONSE)
         names = [item.item for item in items]
         return ShoppingServiceResult(text=f"You have: {', '.join(names)}.")
+
+    async def clear_list(self, session_id: str) -> ShoppingServiceResult:
+        """Remove every item from the shopping list."""
+        _ = session_id
+        items = await self._repository.list_active()
+        if not items:
+            return ShoppingServiceResult(text=SHOPPING_EMPTY_RESPONSE)
+
+        for entry in items:
+            await self._repository.remove(entry.item)
+
+        logger.info("Cleared shopping list (%d items).", len(items))
+        return ShoppingServiceResult(text=SHOPPING_CLEARED_RESPONSE)
 
     async def _complete_json(self, prompt: str) -> dict:
         """Call the LLM and return parsed JSON, wrapping errors."""
