@@ -13,7 +13,7 @@ from prompts import (
     SHOPPING_NOT_FOUND_RESPONSE,
     SHOPPING_REMOVE_PROMPT,
 )
-from prompts.safety import wrap_user_content
+from prompts.safety import wrap_memory_data, wrap_user_content
 from repositories.shopping_repository import ShoppingRepository
 from shopping import ShoppingItemCreate, format_shopping_for_prompt
 
@@ -77,7 +77,7 @@ class ShoppingService:
         payload = await self._complete_json(
             SHOPPING_REMOVE_PROMPT.format(
                 message=wrap_user_content(message),
-                items=format_shopping_for_prompt(current_items),
+                items=wrap_memory_data(format_shopping_for_prompt(current_items)),
             )
         )
         raw_items = payload.get("items", [])

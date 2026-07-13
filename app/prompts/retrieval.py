@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Sequence
 
 from memory import MemoryRecord
-from prompts.safety import PROMPT_INJECTION_RULE, wrap_user_content
+from prompts.safety import PROMPT_INJECTION_RULE, wrap_memory_data, wrap_user_content
 
 
 def format_candidates_for_rerank(candidates: Sequence[MemoryRecord]) -> str:
@@ -16,7 +16,7 @@ def format_candidates_for_rerank(candidates: Sequence[MemoryRecord]) -> str:
     lines: list[str] = []
     for memory in candidates:
         lines.append(
-            f'- id="{memory.id}" | title="{memory.title}" | content="{memory.content}"'
+            f"- id=\"{memory.id}\" | title={wrap_memory_data(memory.title)} | content={wrap_memory_data(memory.content)}"
         )
     return "\n".join(lines)
 
