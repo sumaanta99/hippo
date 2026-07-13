@@ -52,7 +52,7 @@ def test_session_secret_required_outside_auth_bypass(temp_db_path) -> None:
 def test_production_requires_anthropic_key(temp_db_path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Production should require an Anthropic API key for the agent loop."""
     monkeypatch.setenv("HIPPO_ENV", "production")
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "")
     with pytest.raises(ValueError, match="ANTHROPIC_API_KEY"):
         Settings(
             openai_api_key="real-key",
