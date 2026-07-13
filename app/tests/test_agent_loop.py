@@ -252,6 +252,48 @@ async def test_fast_path_skips_agent_for_shopping_list(
 
 
 @pytest.mark.asyncio
+async def test_fast_path_removes_bought_shopping_item(
+    test_settings,
+    memory_repo,
+    shopping_repo,
+    fake_embeddings,
+) -> None:
+    """Phrases like 'bought eggs' should remove from the list via fast path."""
+    agent_called = {"value": False}
+
+    async def fake_create(**kwargs: Any) -> FakeMessage:
+        agent_called["value"] = True
+        return _assistant_message(FakeTextBlock(text="agent"), stop_reason="end_turn")
+
+    def shopping_json_handler(prompt: str, *, system: str | None = None) -> dict:
+        lowered = prompt.lower()
+        if "bought" in lowered and "eggs" in lowered:
+            return {"items": ["eggs"]}
+        if "buy" in lowered or "need" in lowered:
+            items = []
+            for name in ("eggs", "milk", "bread", "water"):
+                if name in lowered:
+                    items.append({"item": name, "quantity": ""})
+            return {"items": items}
+        return {"items": []}
+
+    llm = MockLLMClient(test_settings, json_handler=shopping_json_handler)
+    engine = _build_engine(
+        test_settings,
+        memory_repo,
+        fake_embeddings,
+        fake_create,
+        llm=llm,
+    )
+    await engine.chat("I need milk, eggs, and bread", "shop-session")
+    response = await engine.chat("bought eggs", "shop-session")
+
+    assert response.intent == "shopping_remove"
+    assert "Removed eggs" in response.response
+    assert agent_called["value"] is False
+
+
+@pytest.mark.asyncio
 async def test_fast_path_handles_save_without_agent(
     test_settings,
     memory_repo,

@@ -11,7 +11,13 @@ from tests.conftest import MockLLMClient
 def _shopping_json_handler(prompt: str, *, system: str | None = None) -> dict:
     """Return canned shopping extraction payloads."""
     lowered = prompt.lower()
-    if "remove" in lowered or "forget" in lowered or "no more" in lowered:
+    if (
+        "remove" in lowered
+        or "forget" in lowered
+        or "no more" in lowered
+        or "bought" in lowered
+        or "got" in lowered
+    ):
         if "eggs" in lowered:
             return {"items": ["eggs"]}
         if "milk" in lowered:
@@ -55,6 +61,16 @@ async def test_remove_item_updates_remaining_list(shopping_service: ShoppingServ
     await shopping_service.add_item("buy eggs", "test_user")
     await shopping_service.add_item("need milk", "test_user")
     response = await shopping_service.remove_item("remove eggs", "test_user")
+    assert "Removed eggs." in response.text
+    assert "milk" in response.text
+
+
+@pytest.mark.asyncio
+async def test_bought_item_removes_from_list(shopping_service: ShoppingService) -> None:
+    """Past-tense purchase phrasing should remove items from the list."""
+    await shopping_service.add_item("buy eggs", "test_user")
+    await shopping_service.add_item("need milk", "test_user")
+    response = await shopping_service.remove_item("bought eggs", "test_user")
     assert "Removed eggs." in response.text
     assert "milk" in response.text
 

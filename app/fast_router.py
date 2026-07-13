@@ -47,7 +47,7 @@ _SHOPPING_SHOW = re.compile(
 )
 
 _SHOPPING_REMOVE = re.compile(
-    r"^(?:remove|drop|take\s+off)\s+\w|"
+    r"^(?:remove|drop|take\s+off|bought|got|picked\s+up)(?:\s+the)?\s+\w|"
     r"(?:no\s+more|don't\s+need)\s+\w|"
     r"forget\s+.+\s+from\s+(?:my\s+)?(?:shopping\s+)?list",
     re.IGNORECASE,
