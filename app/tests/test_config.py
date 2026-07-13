@@ -49,6 +49,20 @@ def test_session_secret_required_outside_auth_bypass(temp_db_path) -> None:
         )
 
 
+def test_production_requires_anthropic_key(temp_db_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Production should require an Anthropic API key for the agent loop."""
+    monkeypatch.setenv("HIPPO_ENV", "production")
+    with pytest.raises(ValueError, match="ANTHROPIC_API_KEY"):
+        Settings(
+            openai_api_key="real-key",
+            database_path=str(temp_db_path),
+            hippo_env="production",
+            session_secret="secret",
+            analytics_admin_key="admin",
+            cors_origins="https://example.com",
+        )
+
+
 def test_twilio_requires_account_sid(temp_db_path) -> None:
     """Twilio WhatsApp should require an account SID."""
     with pytest.raises(ValueError, match="TWILIO_ACCOUNT_SID"):

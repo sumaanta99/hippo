@@ -6,29 +6,30 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from classifier import ClassificationResult
-from config import Intent, MemoryType
+from config import MemoryType
 from engine.hippo_engine import HippoEngine
-from models.operations import MemoryServiceResult
 from prompts import SAVE_CONFIRM_RESPONSE
 from tests.conftest import make_memory
 
 
 @pytest.mark.asyncio
-async def test_chat_returns_structured_response(test_settings) -> None:
+async def test_chat_returns_structured_response(test_settings, fake_embeddings) -> None:
     """chat() should return a ChatResponse with session scoping."""
-    engine = HippoEngine(test_settings)
+    from tests.conftest import MockLLMClient
+
+    llm = MockLLMClient(
+        test_settings,
+        json_responses={
+            "__default__": {
+                "title": "Hair clip",
+                "content": "Hair clip on shelf",
+                "memory_type": "object_location",
+                "category": "personal",
+            }
+        },
+    )
+    engine = HippoEngine(test_settings, llm=llm, embedding_client=fake_embeddings)
     await engine.initialize()
-    engine._classifier.classify_intent = AsyncMock(
-        return_value=ClassificationResult(
-            intent=Intent.SAVE_MEMORY,
-            confidence=0.95,
-            reasoning="save",
-        )
-    )
-    engine._session("user-a").memory_service.save_memory = AsyncMock(
-        return_value=MemoryServiceResult(text=SAVE_CONFIRM_RESPONSE)
-    )
     result = await engine.chat("hair clip on shelf", "user-a")
     assert result.response == SAVE_CONFIRM_RESPONSE
     assert result.session_id == "user-a"

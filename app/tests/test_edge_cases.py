@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import pytest
 
-from classifier import ClassificationError, IntentClassifier
+from classifier import IntentClassifier
 from engine.hippo_engine import HippoEngine
 from json_utils import parse_json_object
 from llm_client import LLMError
-from prompts import API_FAILURE_RESPONSE, INPUT_TOO_LONG_RESPONSE, UNKNOWN_RESPONSE
+from prompts import API_FAILURE_RESPONSE, INPUT_TOO_LONG_RESPONSE
 from tests.conftest import MockLLMClient
 
 
@@ -33,23 +33,18 @@ async def test_input_too_long_rejected(test_settings) -> None:
 
 
 @pytest.mark.asyncio
-async def test_classifier_api_failure_returns_fallback(test_settings) -> None:
-    """Classifier API failures should return the API failure response."""
+async def test_classifier_api_failure_returns_fallback(test_settings, fake_embeddings) -> None:
+    """Agent loop failures should return the API failure response."""
+    from agent.loop import AgentLoop, AgentLoopError
 
-    class FailingLLM(MockLLMClient):
-        async def complete_json(
-            self,
-            prompt: str,
-            *,
-            system: str | None = None,
-            max_tokens: int = 256,
-            model: str | None = None,
-        ) -> dict:
-            _ = max_tokens, model
-            raise LLMError("Request timed out.")
+    async def failing_create(**kwargs):
+        raise AgentLoopError("Request timed out.")
 
-    engine = HippoEngine(test_settings)
-    engine._classifier = IntentClassifier(FailingLLM(test_settings), test_settings)
+    engine = HippoEngine(
+        test_settings,
+        embedding_client=fake_embeddings,
+        agent_loop=AgentLoop(test_settings, messages_create=failing_create),
+    )
     await engine.initialize()
     result = await engine.chat("xyzabcqwertyuiop", "session-1")
     assert result.response == API_FAILURE_RESPONSE
@@ -70,21 +65,12 @@ def test_malformed_json_raises_cleanly() -> None:
 
 
 @pytest.mark.asyncio
-async def test_unknown_without_matches_returns_rephrase(test_settings) -> None:
-    """Unknown input with no memory match should ask the user to rephrase."""
-    llm = MockLLMClient(
-        test_settings,
-        json_handler=lambda prompt, **_: {
-            "intent": "UNKNOWN",
-            "confidence": 0.2,
-            "reasoning": "gibberish",
-        },
-    )
-    engine = HippoEngine(test_settings)
-    engine._classifier = IntentClassifier(llm, test_settings)
+async def test_unknown_without_matches_returns_rephrase(test_settings, fake_embeddings) -> None:
+    """Unknown input routed to the agent should fail closed without an API key."""
+    engine = HippoEngine(test_settings, embedding_client=fake_embeddings)
     await engine.initialize()
     result = await engine.chat("xyzabcqwertyuiop", "session-1")
-    assert result.response == UNKNOWN_RESPONSE
+    assert result.response == API_FAILURE_RESPONSE
 
 
 @pytest.mark.asyncio
@@ -105,23 +91,26 @@ async def test_duplicate_classification_is_idempotent(test_settings) -> None:
 
 
 @pytest.mark.asyncio
-async def test_service_failure_returns_api_fallback(test_settings) -> None:
-    """Service-level LLM failures should not crash the engine."""
+async def test_service_failure_returns_api_fallback(test_settings, fake_embeddings) -> None:
+    """Service-level LLM failures on the fast path should not crash the engine."""
 
-    def handler(prompt: str, *, system: str | None = None) -> dict:
-        if "Classify the user's message" in prompt:
-            return {
-                "intent": "SAVE_MEMORY",
-                "confidence": 0.95,
-                "reasoning": "save",
-            }
-        raise LLMError("Request failed.")
+    class FailingLLM(MockLLMClient):
+        async def complete_json(
+            self,
+            prompt: str,
+            *,
+            system: str | None = None,
+            max_tokens: int = 256,
+            model: str | None = None,
+        ) -> dict:
+            _ = prompt, system, max_tokens, model
+            raise LLMError("Request failed.")
 
-    llm = MockLLMClient(test_settings, json_handler=handler)
-    engine = HippoEngine(test_settings)
-    engine._classifier = IntentClassifier(llm, test_settings)
-    services = engine._session("session-1")
-    services.memory_service._llm = llm
+    engine = HippoEngine(
+        test_settings,
+        llm=FailingLLM(test_settings),
+        embedding_client=fake_embeddings,
+    )
     await engine.initialize()
     result = await engine.chat("hair clip on bookshelf", "session-1")
     assert result.response == API_FAILURE_RESPONSE

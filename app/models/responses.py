@@ -20,6 +20,7 @@ INTENT_LABELS: dict[Intent, str] = {
     Intent.SHOPPING_SHOW: "shopping_show",
     Intent.GENERAL_CHAT: "chat",
     Intent.UNKNOWN: "unknown",
+    Intent.AGENT: "agent",
 }
 
 
@@ -67,6 +68,7 @@ class ChatResponse(BaseModel):
     memories_deleted: list[MemorySnapshot] = Field(default_factory=list)
     search_results: list[MemorySnapshot] = Field(default_factory=list)
     latency_ms: float = 0.0
+    message_id: str | None = None
 
 
 class SessionStats(BaseModel):

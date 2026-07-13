@@ -106,6 +106,7 @@ def test_settings(temp_db_path: Path) -> Settings:
     """Provide isolated settings for tests."""
     return Settings(
         openai_api_key="test-key",
+        anthropic_api_key="test-key",
         database_path=str(temp_db_path),
         user_id="test_user",
         log_level="WARNING",

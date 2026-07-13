@@ -5,20 +5,22 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Callable
+from typing import TYPE_CHECKING, Any
 
-from classifier import ClassificationError, IntentClassifier
+if TYPE_CHECKING:
+    from agent.loop import AgentLoop, AgentRunResult
+
 from config import Intent, Settings, get_settings
-from constants import LOW_CONFIDENCE_THRESHOLD
 from embeddings import EmbeddingClient
 from engine.session import SessionServices, build_session_services
 from llm_client import LLMClient
 from logger import configure_logging, get_logger
+from memory import MemoryRecord
 from models.operations import MemoryServiceResult, ShoppingServiceResult
 from models.responses import ChatResponse, MemorySnapshot, SessionStats, intent_label
 from prompts import API_FAILURE_RESPONSE, INPUT_TOO_LONG_RESPONSE, UNKNOWN_RESPONSE
-from services.hippo_service import HippoService
-from services.memory_service import MemoryServiceError
-from services.shopping_service import ShoppingServiceError
+from stores.conversation_store import ConversationStore
+from stores.feedback_store import FeedbackRating, FeedbackStore
 
 
 logger = get_logger(__name__)
@@ -37,18 +39,11 @@ class HippoEngine:
         *,
         llm: LLMClient | None = None,
         embedding_client: EmbeddingClient | None = None,
-        classifier: IntentClassifier | None = None,
-        chat_service: HippoService | None = None,
+        agent_loop: AgentLoop | None = None,
+        conversation_store: ConversationStore | None = None,
+        feedback_store: FeedbackStore | None = None,
     ) -> None:
-        """Wire engine dependencies (all injectable for testing).
-
-        Args:
-            settings: Application configuration.
-            llm: OpenAI chat client.
-            embedding_client: Embedding generation client.
-            classifier: Intent classification service.
-            chat_service: General conversation handler.
-        """
+        """Wire engine dependencies (all injectable for testing)."""
         self._settings = settings or get_settings()
         configure_logging(
             self._settings.log_level,
@@ -56,8 +51,17 @@ class HippoEngine:
         )
         self._llm = llm or LLMClient(self._settings)
         self._embedding_client = embedding_client or EmbeddingClient(self._settings)
-        self._classifier = classifier or IntentClassifier(self._llm, self._settings)
-        self._chat_service = chat_service or HippoService(self._llm, self._settings)
+        if agent_loop is None:
+            from agent.loop import AgentLoop
+
+            self._agent_loop = AgentLoop(self._settings)
+        else:
+            self._agent_loop = agent_loop
+        self._conversation_store = conversation_store or ConversationStore(self._settings)
+        self._feedback_store = feedback_store or FeedbackStore(
+            self._settings,
+            embedding_client=self._embedding_client,
+        )
         self._sessions: dict[str, SessionServices] = {}
         self._initialized = False
 
@@ -73,6 +77,8 @@ class HippoEngine:
         )
         await bootstrap.memory_repository.initialize()
         await bootstrap.shopping_repository.initialize()
+        await self._conversation_store.initialize()
+        await self._feedback_store.initialize()
         self._initialized = True
 
     def _session(self, session_id: str) -> SessionServices:
@@ -93,16 +99,8 @@ class HippoEngine:
         *,
         on_status: Callable[[str], None] | None = None,
     ) -> ChatResponse:
-        """Process a natural-language message and return a structured response.
-
-        Args:
-            message: User input text.
-            session_id: Session or user identifier scoping all memory operations.
-            on_status: Optional callback for in-progress status text (e.g. CLI).
-
-        Returns:
-            ChatResponse with reply text, intent, and affected memories.
-        """
+        """Process a natural-language message and return a structured response."""
+        _ = on_status
         await self.initialize()
         cleaned = message.strip()
         if not cleaned:
@@ -126,12 +124,68 @@ class HippoEngine:
             message_length=len(cleaned),
         )
 
+        services = self._session(session_id)
+        history = await self._conversation_store.get_recent_history(
+            session_id,
+            limit=self._settings.agent_history_turns,
+        )
+
         try:
-            classification = await self._classifier.classify_intent(cleaned, session_id)
-        except ClassificationError as exc:
+            from agent.fast_path import try_fast_path
+            from agent.loop import AgentLoopError
+            from services.memory_service import MemoryServiceError
+            from services.shopping_service import ShoppingServiceError
+
+            fast_result = await try_fast_path(cleaned, services)
+            if fast_result is not None:
+                response = await self._finalize_turn(
+                    session_id=session_id,
+                    user_message=cleaned,
+                    response_text=fast_result.response_text,
+                    intent=fast_result.intent,
+                    confidence=fast_result.confidence,
+                    tool_calls=fast_result.tool_calls,
+                    started=started,
+                    created=fast_result.created,
+                    updated=fast_result.updated,
+                    deleted=fast_result.deleted,
+                    search_results=fast_result.search_results,
+                )
+                return response
+
+            corrections = await self._feedback_store.get_similar_corrections(
+                cleaned,
+                limit=3,
+            )
+            agent_result = await self._agent_loop.run(
+                user_message=cleaned,
+                services=services,
+                history=history,
+                corrections=corrections,
+            )
+            response = await self._finalize_agent_turn(
+                session_id=session_id,
+                user_message=cleaned,
+                agent_result=agent_result,
+                started=started,
+            )
+            return response
+        except (MemoryServiceError, ShoppingServiceError) as exc:
             logger.error(
-                "Intent classification failed.",
-                error_type="ClassificationError",
+                "Handler failed.",
+                error_type=type(exc).__name__,
+                recovery_action="return API failure response",
+                exc=exc,
+            )
+            return ChatResponse(
+                response=API_FAILURE_RESPONSE,
+                intent=intent_label(Intent.UNKNOWN),
+                session_id=session_id,
+            )
+        except AgentLoopError as exc:
+            logger.error(
+                "Agent loop failed.",
+                error_type="AgentLoopError",
                 recovery_action="return API failure response",
                 exc=exc,
             )
@@ -141,55 +195,29 @@ class HippoEngine:
                 session_id=session_id,
             )
 
-        intent = classification.intent
-        if classification.confidence < LOW_CONFIDENCE_THRESHOLD and intent != Intent.UNKNOWN:
-            intent = Intent.UNKNOWN
+    async def submit_feedback(
+        self,
+        *,
+        session_id: str,
+        message_id: str,
+        rating: FeedbackRating,
+        note: str | None = None,
+    ) -> str:
+        """Record helpful/not_helpful feedback for a prior chat turn."""
+        await self.initialize()
+        turn = await self._conversation_store.get_turn(message_id)
+        if turn is None or turn.session_id != session_id:
+            raise HippoEngineError("Chat turn not found for this session.")
 
-        services = self._session(session_id)
-        try:
-            result = await self._dispatch(
-                intent, cleaned, services, on_status=on_status
-            )
-        except (MemoryServiceError, ShoppingServiceError) as exc:
-            logger.error(
-                "Handler failed.",
-                error_type=type(exc).__name__,
-                intent=intent.value,
-                recovery_action="return API failure response",
-                exc=exc,
-            )
-            return ChatResponse(
-                response=API_FAILURE_RESPONSE,
-                intent=intent_label(intent),
-                session_id=session_id,
-                confidence=classification.confidence,
-            )
-
-        resolved_intent = intent
-        if (
-            intent == Intent.UNKNOWN
-            and isinstance(result, MemoryServiceResult)
-            and result.search_results
-        ):
-            resolved_intent = Intent.QUERY_MEMORY
-
-        elapsed_ms = (time.perf_counter() - started) * 1000
-        response = self._to_chat_response(
-            result,
-            intent=resolved_intent,
+        return await self._feedback_store.record_feedback(
             session_id=session_id,
-            confidence=classification.confidence,
-            latency_ms=elapsed_ms,
+            message_id=message_id,
+            rating=rating,
+            note=note,
+            user_message=turn.user_message,
+            assistant_response=turn.assistant_response,
+            tool_calls=turn.tool_calls,
         )
-        logger.log_event(
-            "response_completed",
-            session_id=session_id,
-            intent=resolved_intent.value,
-            confidence=classification.confidence,
-            latency_ms=round(elapsed_ms, 2),
-            response_length=len(response.response),
-        )
-        return response
 
     def chat_sync(self, message: str, session_id: str) -> ChatResponse:
         """Synchronous wrapper around :meth:`chat` for simple scripts."""
@@ -227,88 +255,85 @@ class HippoEngine:
         for item in await services.shopping_repository.list_active():
             await services.shopping_repository.remove(item.item)
 
-    async def _dispatch(
+    async def get_admin_insights(self) -> dict[str, Any]:
+        """Return agent tool-call and feedback data for admin analytics."""
+        await self.initialize()
+        return {
+            "feedback": await self._feedback_store.get_summary(),
+            "recentToolCalls": await self._conversation_store.list_recent_tool_calls(
+                limit=50
+            ),
+        }
+
+    async def _finalize_turn(
         self,
-        intent: Intent,
-        user_input: str,
-        services: SessionServices,
         *,
-        on_status: Callable[[str], None] | None = None,
-    ) -> MemoryServiceResult | ShoppingServiceResult | str:
-        """Route a classified intent to the appropriate session service."""
-        session_id = services.session_id
-
-        if intent == Intent.SAVE_MEMORY:
-            return await services.memory_service.save_memory(user_input, session_id)
-
-        if intent == Intent.QUERY_MEMORY:
-            return await services.memory_service.query_memory(
-                user_input, session_id, on_status=on_status
-            )
-
-        if intent == Intent.UPDATE_MEMORY:
-            return await services.memory_service.update_memory(user_input, session_id)
-
-        if intent == Intent.DELETE_MEMORY:
-            return await services.memory_service.delete_memory(user_input, session_id)
-
-        if intent == Intent.SHOPPING_ADD:
-            return await services.shopping_service.add_item(user_input, session_id)
-
-        if intent == Intent.SHOPPING_REMOVE:
-            return await services.shopping_service.remove_item(user_input, session_id)
-
-        if intent == Intent.SHOPPING_SHOW:
-            return await services.shopping_service.show_list(session_id)
-
-        if intent == Intent.GENERAL_CHAT:
-            text = await self._chat_service.handle_general_chat(user_input)
-            return MemoryServiceResult(text=text)
-
-        implicit = await services.memory_service.try_implicit_query(
-            user_input, session_id, on_status=on_status
-        )
-        if implicit is not None:
-            return implicit
-
-        return MemoryServiceResult(text=UNKNOWN_RESPONSE)
-
-    def _to_chat_response(
-        self,
-        result: MemoryServiceResult | ShoppingServiceResult | str,
-        *,
-        intent: Intent,
         session_id: str,
+        user_message: str,
+        response_text: str,
+        intent: Intent,
         confidence: float,
-        latency_ms: float,
+        tool_calls: list[dict[str, Any]],
+        started: float,
+        agent_trace: list[dict[str, Any]] | None = None,
+        created: list[MemoryRecord] | None = None,
+        updated: list[MemoryRecord] | None = None,
+        deleted: list[MemoryRecord] | None = None,
+        search_results: list[MemoryRecord] | None = None,
     ) -> ChatResponse:
-        """Convert an internal service result into a public ChatResponse."""
-        if isinstance(result, str):
-            return ChatResponse(
-                response=result,
-                intent=intent_label(intent),
-                session_id=session_id,
-                confidence=confidence,
-                latency_ms=latency_ms,
-            )
+        message_id = await self._conversation_store.append_turn(
+            session_id=session_id,
+            user_message=user_message,
+            assistant_response=response_text,
+            tool_calls=tool_calls,
+            agent_trace=agent_trace,
+        )
+        elapsed_ms = (time.perf_counter() - started) * 1000
 
-        if isinstance(result, ShoppingServiceResult):
-            return ChatResponse(
-                response=result.text,
-                intent=intent_label(intent),
-                session_id=session_id,
-                confidence=confidence,
-                latency_ms=latency_ms,
-            )
-
-        return ChatResponse(
-            response=result.text,
+        response = ChatResponse(
+            response=response_text,
             intent=intent_label(intent),
             session_id=session_id,
             confidence=confidence,
-            memories_created=[MemorySnapshot.from_record(r) for r in result.created],
-            memories_updated=[MemorySnapshot.from_record(r) for r in result.updated],
-            memories_deleted=[MemorySnapshot.from_record(r) for r in result.deleted],
-            search_results=[MemorySnapshot.from_record(r) for r in result.search_results],
-            latency_ms=latency_ms,
+            memories_created=[MemorySnapshot.from_record(r) for r in (created or [])],
+            memories_updated=[MemorySnapshot.from_record(r) for r in (updated or [])],
+            memories_deleted=[MemorySnapshot.from_record(r) for r in (deleted or [])],
+            search_results=[
+                MemorySnapshot.from_record(r) for r in (search_results or [])
+            ],
+            latency_ms=elapsed_ms,
+            message_id=message_id,
+        )
+        logger.log_event(
+            "response_completed",
+            session_id=session_id,
+            intent=intent.value,
+            confidence=confidence,
+            latency_ms=round(elapsed_ms, 2),
+            response_length=len(response.response),
+            message_id=message_id,
+        )
+        return response
+
+    async def _finalize_agent_turn(
+        self,
+        *,
+        session_id: str,
+        user_message: str,
+        agent_result: AgentRunResult,
+        started: float,
+    ) -> ChatResponse:
+        return await self._finalize_turn(
+            session_id=session_id,
+            user_message=user_message,
+            response_text=agent_result.final_text or UNKNOWN_RESPONSE,
+            intent=Intent.AGENT,
+            confidence=1.0,
+            tool_calls=agent_result.tool_calls,
+            started=started,
+            agent_trace=agent_result.agent_trace,
+            created=agent_result.effects.created,
+            updated=agent_result.effects.updated,
+            deleted=agent_result.effects.deleted,
+            search_results=agent_result.effects.search_results,
         )

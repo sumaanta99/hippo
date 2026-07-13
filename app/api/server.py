@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 
 from analytics_store import AnalyticsPayload, UsageAnalyticsStore, UsageReport
 from config import Settings, WhatsAppProvider, get_settings
-from engine.hippo_engine import HippoEngine
+from engine.hippo_engine import HippoEngine, HippoEngineError
 from handlers.whatsapp import (
     parse_meta_payload,
     parse_twilio_payload,
@@ -48,7 +48,13 @@ except ImportError:  # pragma: no cover - optional dependency
 
 
 SESSION_ID_PATTERN = r"^[a-zA-Z0-9_-]{1,128}$"
-RATE_LIMIT_PATHS = frozenset({"/chat", "/analytics", "/sessions", "/sessions/refresh"})
+RATE_LIMIT_PATHS = frozenset({
+    "/chat",
+    "/analytics",
+    "/feedback",
+    "/sessions",
+    "/sessions/refresh",
+})
 RATE_LIMIT_MAX_REQUESTS = 60
 RATE_LIMIT_WINDOW_SECONDS = 60
 
@@ -72,6 +78,22 @@ class SessionResponse(BaseModel):
     session_id: str
     token: str
     expires_at: int
+
+
+class FeedbackRequest(BaseModel):
+    """User feedback for a prior chat turn."""
+
+    session_id: str = Field(min_length=1, max_length=128, pattern=SESSION_ID_PATTERN)
+    message_id: str = Field(min_length=1, max_length=128)
+    rating: str = Field(pattern=r"^(helpful|not_helpful)$")
+    note: str | None = Field(default=None, max_length=2000)
+
+
+class FeedbackResponse(BaseModel):
+    """Acknowledgement of stored feedback."""
+
+    ok: bool = True
+    feedback_id: str
 
 
 _engine: HippoEngine | None = None
@@ -320,10 +342,30 @@ def create_app() -> Any:
         await get_analytics().record_event(payload)
         return {"ok": True}
 
+    @app.post("/feedback", response_model=FeedbackResponse)
+    async def submit_feedback(
+        request: FeedbackRequest,
+        authorization: str | None = Header(default=None),
+    ) -> FeedbackResponse:
+        """Record optional helpful/not_helpful feedback for a chat turn."""
+        _verify_session_access(request.session_id, authorization)
+        try:
+            feedback_id = await get_engine().submit_feedback(
+                session_id=request.session_id,
+                message_id=request.message_id,
+                rating=request.rating,  # type: ignore[arg-type]
+                note=request.note,
+            )
+        except HippoEngineError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return FeedbackResponse(feedback_id=feedback_id)
+
     @app.get("/admin/analytics", response_model=UsageReport)
     async def analytics_report(_: None = Depends(_require_analytics_admin)) -> UsageReport:
         """Return private usage metrics. Requires Bearer ANALYTICS_ADMIN_KEY."""
-        return await get_analytics().get_report()
+        report = await get_analytics().get_report()
+        insights = await get_engine().get_admin_insights()
+        return report.model_copy(update={"agent_insights": insights})
 
     @app.get("/memories/{session_id}", response_model=list[MemorySnapshot])
     async def list_memories(

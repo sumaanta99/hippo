@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 
-from classifier import ClassificationResult
-from config import Intent
 from engine.hippo_engine import HippoEngine
 from json_utils import parse_json_object
 from logger import StructuredLogger, configure_logging, get_logger
@@ -55,44 +53,34 @@ def test_structured_logger_error_event(capsys) -> None:
 
 
 @pytest.mark.asyncio
-async def test_engine_routes_save_intent(test_settings) -> None:
-    """HippoEngine should route SAVE_MEMORY intents to the memory service."""
-    engine = HippoEngine(test_settings)
+async def test_engine_routes_save_intent(test_settings, fake_embeddings) -> None:
+    """HippoEngine should route SAVE_MEMORY fast-path messages to the memory service."""
+    llm = MockLLMClient(
+        test_settings,
+        json_responses={
+            "__default__": {
+                "title": "Hair clip",
+                "content": "Hair clip on bookshelf",
+                "memory_type": "object_location",
+                "category": "personal",
+            }
+        },
+    )
+    engine = HippoEngine(test_settings, llm=llm, embedding_client=fake_embeddings)
     await engine.initialize()
-    engine._classifier.classify_intent = AsyncMock(
-        return_value=ClassificationResult(
-            intent=Intent.SAVE_MEMORY,
-            confidence=0.95,
-            reasoning="save",
-        )
-    )
-    engine._session("test").memory_service.save_memory = AsyncMock(
-        return_value=MemoryServiceResult(text=SAVE_CONFIRM_RESPONSE)
-    )
     result = await engine.chat("hair clip on bookshelf", "test")
     assert result.response == SAVE_CONFIRM_RESPONSE
-    engine._session("test").memory_service.save_memory.assert_awaited_once()
+    assert result.intent == "save"
 
 
 @pytest.mark.asyncio
-async def test_engine_routes_shopping_show(test_settings) -> None:
-    """HippoEngine should route SHOPPING_SHOW intents to the shopping service."""
-    from models.operations import ShoppingServiceResult
-
-    engine = HippoEngine(test_settings)
+async def test_engine_routes_shopping_show(test_settings, fake_embeddings) -> None:
+    """HippoEngine should route SHOPPING_SHOW fast-path messages to shopping."""
+    engine = HippoEngine(test_settings, embedding_client=fake_embeddings)
     await engine.initialize()
-    engine._classifier.classify_intent = AsyncMock(
-        return_value=ClassificationResult(
-            intent=Intent.SHOPPING_SHOW,
-            confidence=0.95,
-            reasoning="show",
-        )
-    )
-    engine._session("test").shopping_service.show_list = AsyncMock(
-        return_value=ShoppingServiceResult(text="You have: eggs.")
-    )
-    result = await engine.chat("what's on my list", "test")
-    assert result.response == "You have: eggs."
+    result = await engine.chat("what's on my shopping list", "test")
+    assert "empty" in result.response.lower() or "have:" in result.response.lower()
+    assert result.intent == "shopping_show"
 
 
 @pytest.mark.asyncio

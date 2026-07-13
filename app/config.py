@@ -31,6 +31,7 @@ class Intent(StrEnum):
     SHOPPING_SHOW = "SHOPPING_SHOW"
     GENERAL_CHAT = "GENERAL_CHAT"
     UNKNOWN = "UNKNOWN"
+    AGENT = "AGENT"
 
 
 class MemoryType(StrEnum):
@@ -168,6 +169,18 @@ class Settings(BaseSettings):
         default="https://hippostudio.netlify.app",
         validation_alias=AliasChoices("WHATSAPP_STUDIO_URL", "whatsapp_studio_url"),
     )
+    anthropic_api_key: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("ANTHROPIC_API_KEY", "anthropic_api_key"),
+    )
+    anthropic_model: str = Field(
+        default="claude-sonnet-4-6",
+        validation_alias=AliasChoices("ANTHROPIC_MODEL", "anthropic_model"),
+    )
+    agent_history_turns: int = Field(
+        default=10,
+        validation_alias=AliasChoices("AGENT_HISTORY_TURNS", "agent_history_turns"),
+    )
 
     def is_development(self) -> bool:
         """Return True when running in local development mode."""
@@ -228,6 +241,9 @@ class Settings(BaseSettings):
 
         if not self.session_secret:
             raise ValueError("HIPPO_SESSION_SECRET must be set in production.")
+
+        if not self.anthropic_api_key:
+            raise ValueError("ANTHROPIC_API_KEY must be set in production.")
 
         return self
 

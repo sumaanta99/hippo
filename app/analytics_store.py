@@ -54,6 +54,7 @@ class UsageReport(BaseModel):
     updated_at: str
     summary: dict[str, Any]
     sessions: dict[str, SessionMetrics]
+    agent_insights: dict[str, Any] = Field(default_factory=dict)
 
 
 class UsageAnalyticsStore:
