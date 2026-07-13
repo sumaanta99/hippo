@@ -16,6 +16,9 @@ from llm_client import LLMClient
 
 
 os.environ.setdefault("OPENAI_API_KEY", "test-key")
+os.environ.setdefault("HIPPO_ENV", "development")
+os.environ.setdefault("HIPPO_SESSION_SECRET", "test-session-secret")
+os.environ.setdefault("WHATSAPP_WEBHOOK_SECRET", "test-webhook-secret")
 
 
 class FakeEmbeddingClient(EmbeddingClient):
@@ -107,6 +110,7 @@ def test_settings(temp_db_path: Path) -> Settings:
         user_id="test_user",
         log_level="WARNING",
         llm_timeout_seconds=5.0,
+        session_secret="test-session-secret",
     )
 
 

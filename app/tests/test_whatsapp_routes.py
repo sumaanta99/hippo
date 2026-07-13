@@ -26,6 +26,7 @@ def whatsapp_settings(temp_db_path) -> Settings:
         whatsapp_webhook_secret=WEBHOOK_SECRET,
         whatsapp_phone_number_id="123456789",
         whatsapp_access_token="test-token",
+        session_secret="test-session-secret",
     )
 
 

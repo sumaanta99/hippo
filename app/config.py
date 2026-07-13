@@ -115,6 +115,28 @@ class Settings(BaseSettings):
         default=None,
         validation_alias=AliasChoices("HIPPO_SESSION_SECRET", "session_secret"),
     )
+    auth_disabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("HIPPO_AUTH_DISABLED", "auth_disabled"),
+    )
+    session_token_ttl_seconds: int = Field(
+        default=86_400,
+        validation_alias=AliasChoices(
+            "SESSION_TOKEN_TTL_SECONDS",
+            "session_token_ttl_seconds",
+        ),
+    )
+    session_token_refresh_grace_seconds: int = Field(
+        default=3_600,
+        validation_alias=AliasChoices(
+            "SESSION_TOKEN_REFRESH_GRACE_SECONDS",
+            "session_token_refresh_grace_seconds",
+        ),
+    )
+    redis_url: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("REDIS_URL", "redis_url"),
+    )
     chat_rate_limit_per_session: int = Field(
         default=30,
         validation_alias=AliasChoices(
@@ -146,6 +168,46 @@ class Settings(BaseSettings):
         default="https://hippostudio.netlify.app",
         validation_alias=AliasChoices("WHATSAPP_STUDIO_URL", "whatsapp_studio_url"),
     )
+
+    def is_development(self) -> bool:
+        """Return True when running in local development mode."""
+        return self.hippo_env.lower() == "development"
+
+    def auth_bypass_allowed(self) -> bool:
+        """Return True when session auth may be skipped."""
+        return self.is_development() and self.auth_disabled
+
+    def whatsapp_enabled(self) -> bool:
+        """Return True when outbound WhatsApp credentials are configured."""
+        return bool(self.whatsapp_access_token and self.whatsapp_phone_number_id)
+
+    @model_validator(mode="after")
+    def validate_auth_and_whatsapp_settings(self) -> Self:
+        """Fail fast when auth or WhatsApp settings are unsafe."""
+        if self.auth_disabled and not self.is_development():
+            raise ValueError("HIPPO_AUTH_DISABLED is only allowed in development.")
+
+        if not self.auth_bypass_allowed() and not self.session_secret:
+            raise ValueError(
+                "HIPPO_SESSION_SECRET must be set unless HIPPO_AUTH_DISABLED=true "
+                "in development."
+            )
+
+        if self.whatsapp_enabled() and not self.whatsapp_webhook_secret:
+            raise ValueError(
+                "WHATSAPP_WEBHOOK_SECRET must be set when WhatsApp credentials are configured."
+            )
+
+        if (
+            self.whatsapp_enabled()
+            and self.whatsapp_provider == WhatsAppProvider.TWILIO
+            and not self.twilio_account_sid
+        ):
+            raise ValueError(
+                "TWILIO_ACCOUNT_SID must be set when WHATSAPP_PROVIDER=twilio."
+            )
+
+        return self
 
     @model_validator(mode="after")
     def validate_production_settings(self) -> Self:

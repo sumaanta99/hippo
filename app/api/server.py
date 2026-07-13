@@ -5,14 +5,13 @@ from __future__ import annotations
 import json
 import secrets
 import time
-from collections import defaultdict
 from contextlib import asynccontextmanager
 from typing import Any
 
 from pydantic import BaseModel, Field
 
 from analytics_store import AnalyticsPayload, UsageAnalyticsStore, UsageReport
-from config import WhatsAppProvider, get_settings
+from config import Settings, WhatsAppProvider, get_settings
 from engine.hippo_engine import HippoEngine
 from handlers.whatsapp import (
     parse_meta_payload,
@@ -24,7 +23,12 @@ from handlers.whatsapp import (
 from log_redaction import redact_phone_for_log
 from logger import get_logger
 from models.responses import ChatResponse, MemorySnapshot, SessionStats
-from session_auth import create_session_id, sign_session_token, verify_session_token
+from rate_limit import RateLimiter, create_rate_limiter
+from session_auth import (
+    create_session_id,
+    sign_session_token,
+    verify_session_token,
+)
 
 try:
     from fastapi import Depends, FastAPI, Header, HTTPException, Request
@@ -44,7 +48,7 @@ except ImportError:  # pragma: no cover - optional dependency
 
 
 SESSION_ID_PATTERN = r"^[a-zA-Z0-9_-]{1,128}$"
-RATE_LIMIT_PATHS = frozenset({"/chat", "/analytics", "/sessions"})
+RATE_LIMIT_PATHS = frozenset({"/chat", "/analytics", "/sessions", "/sessions/refresh"})
 RATE_LIMIT_MAX_REQUESTS = 60
 RATE_LIMIT_WINDOW_SECONDS = 60
 
@@ -56,17 +60,23 @@ class ChatRequest(BaseModel):
     session_id: str = Field(min_length=1, max_length=128, pattern=SESSION_ID_PATTERN)
 
 
+class SessionRefreshRequest(BaseModel):
+    """Request body for renewing an existing session token."""
+
+    session_id: str = Field(min_length=1, max_length=128, pattern=SESSION_ID_PATTERN)
+
+
 class SessionResponse(BaseModel):
     """Server-issued session credentials."""
 
     session_id: str
     token: str
+    expires_at: int
 
 
 _engine: HippoEngine | None = None
 _analytics: UsageAnalyticsStore | None = None
-_rate_buckets: dict[str, list[float]] = defaultdict(list)
-_session_rate_buckets: dict[str, list[float]] = defaultdict(list)
+_rate_limiter: RateLimiter | None = None
 _webhook_logger = get_logger(__name__)
 
 
@@ -84,49 +94,86 @@ def get_analytics() -> UsageAnalyticsStore:
     return _analytics
 
 
+def get_rate_limiter() -> RateLimiter:
+    """Return the shared rate limiter instance."""
+    if _rate_limiter is None:
+        raise RuntimeError("Rate limiter not initialized.")
+    return _rate_limiter
+
+
 def _parse_cors_origins(raw: str) -> list[str]:
     origins = [origin.strip() for origin in raw.split(",") if origin.strip()]
     return origins or ["*"]
 
 
-def _is_production(settings: Any) -> bool:
+def _is_production(settings: Settings) -> bool:
     return settings.hippo_env.lower() == "production"
 
 
-def _session_auth_enabled(settings: Any) -> bool:
-    return bool(settings.session_secret)
+def _session_auth_required(settings: Settings) -> bool:
+    return not settings.auth_bypass_allowed()
 
 
-def _verify_session_access(session_id: str, authorization: str | None) -> None:
+def _require_session_secret(settings: Settings) -> str:
+    secret = settings.session_secret
+    if not secret:
+        raise HTTPException(status_code=503, detail="Session auth is not configured.")
+    return secret
+
+
+def _issue_session_credentials(settings: Settings) -> SessionResponse:
+    session_id = create_session_id()
+    secret = _require_session_secret(settings)
+    token, expires_at = sign_session_token(
+        session_id,
+        secret,
+        ttl_seconds=settings.session_token_ttl_seconds,
+    )
+    return SessionResponse(session_id=session_id, token=token, expires_at=expires_at)
+
+
+def _verify_session_access(
+    session_id: str,
+    authorization: str | None,
+    *,
+    allow_expired_grace: bool = False,
+) -> None:
     """Ensure the caller owns the session id."""
     settings = get_settings()
-    if not _session_auth_enabled(settings):
+    if not _session_auth_required(settings):
         return
+
+    secret = _require_session_secret(settings)
 
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Unauthorized.")
 
     token = authorization.removeprefix("Bearer ").strip()
-    if not verify_session_token(session_id, token, settings.session_secret or ""):
+    grace = (
+        settings.session_token_refresh_grace_seconds if allow_expired_grace else 0
+    )
+    if not verify_session_token(
+        session_id,
+        token,
+        secret,
+        allow_expired_grace_seconds=grace,
+    ):
         raise HTTPException(status_code=401, detail="Unauthorized.")
 
 
-def _enforce_session_rate_limit(session_id: str) -> None:
+async def _enforce_session_rate_limit(session_id: str) -> None:
     """Limit chat volume per authenticated session."""
     settings = get_settings()
-    now = time.time()
-    bucket = _session_rate_buckets[session_id]
-    bucket[:] = [
-        timestamp
-        for timestamp in bucket
-        if now - timestamp < RATE_LIMIT_WINDOW_SECONDS
-    ]
-    if len(bucket) >= settings.chat_rate_limit_per_session:
+    allowed = await get_rate_limiter().allow(
+        f"session:{session_id}",
+        limit=settings.chat_rate_limit_per_session,
+        window_seconds=RATE_LIMIT_WINDOW_SECONDS,
+    )
+    if not allowed:
         raise HTTPException(
             status_code=429,
             detail="Too many requests for this session. Try again shortly.",
         )
-    bucket.append(now)
 
 
 def _require_analytics_admin(
@@ -153,28 +200,24 @@ def _validate_session_id(session_id: str) -> str:
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
-    """Simple in-memory rate limiter for public write endpoints."""
+    """Rate limiter for public write endpoints."""
 
     async def dispatch(self, request: Request, call_next: Any) -> Any:
         if request.url.path not in RATE_LIMIT_PATHS:
             return await call_next(request)
 
         client = request.client.host if request.client else "unknown"
-        now = time.time()
-        bucket = _rate_buckets[client]
-        bucket[:] = [
-            timestamp
-            for timestamp in bucket
-            if now - timestamp < RATE_LIMIT_WINDOW_SECONDS
-        ]
-
-        if len(bucket) >= RATE_LIMIT_MAX_REQUESTS:
+        allowed = await get_rate_limiter().allow(
+            f"ip:{client}",
+            limit=RATE_LIMIT_MAX_REQUESTS,
+            window_seconds=RATE_LIMIT_WINDOW_SECONDS,
+        )
+        if not allowed:
             return JSONResponse(
                 status_code=429,
                 content={"detail": "Too many requests. Try again shortly."},
             )
 
-        bucket.append(now)
         return await call_next(request)
 
 
@@ -192,11 +235,12 @@ def create_app() -> Any:
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
-        global _engine, _analytics
+        global _engine, _analytics, _rate_limiter
         _engine = HippoEngine(settings)
         await _engine.initialize()
         _analytics = UsageAnalyticsStore(settings)
         await _analytics.initialize()
+        _rate_limiter = create_rate_limiter(settings.redis_url)
         yield
 
     app = FastAPI(
@@ -227,10 +271,34 @@ def create_app() -> Any:
     @app.post("/sessions", response_model=SessionResponse)
     async def create_session() -> SessionResponse:
         """Issue a server-signed session id and token."""
-        session_id = create_session_id()
-        secret = settings.session_secret
-        token = sign_session_token(session_id, secret) if secret else ""
-        return SessionResponse(session_id=session_id, token=token)
+        if not _session_auth_required(settings):
+            session_id = create_session_id()
+            return SessionResponse(session_id=session_id, token="", expires_at=0)
+        return _issue_session_credentials(settings)
+
+    @app.post("/sessions/refresh", response_model=SessionResponse)
+    async def refresh_session(
+        request: SessionRefreshRequest,
+        authorization: str | None = Header(default=None),
+    ) -> SessionResponse:
+        """Renew an existing session token within the refresh grace window."""
+        validated = _validate_session_id(request.session_id)
+        _verify_session_access(
+            validated,
+            authorization,
+            allow_expired_grace=True,
+        )
+        secret = _require_session_secret(settings)
+        token, expires_at = sign_session_token(
+            validated,
+            secret,
+            ttl_seconds=settings.session_token_ttl_seconds,
+        )
+        return SessionResponse(
+            session_id=validated,
+            token=token,
+            expires_at=expires_at,
+        )
 
     @app.post("/chat", response_model=ChatResponse)
     async def chat(
@@ -239,7 +307,7 @@ def create_app() -> Any:
     ) -> ChatResponse:
         """Process a natural-language message for a session."""
         _verify_session_access(request.session_id, authorization)
-        _enforce_session_rate_limit(request.session_id)
+        await _enforce_session_rate_limit(request.session_id)
         return await get_engine().chat(request.message, request.session_id)
 
     @app.post("/analytics")
@@ -320,15 +388,18 @@ def create_app() -> Any:
     @app.post("/whatsapp/webhook")
     async def whatsapp_webhook(request: Request) -> Response:
         """Receive inbound WhatsApp messages from Meta or Twilio."""
+        if not settings.whatsapp_enabled():
+            raise HTTPException(status_code=404, detail="WhatsApp is not configured.")
+
         provider = settings.whatsapp_provider
-        secret = settings.whatsapp_webhook_secret
+        secret = settings.whatsapp_webhook_secret or ""
 
         if provider == WhatsAppProvider.META:
             body = await request.body()
-            if secret and not verify_meta_signature(
+            if not verify_meta_signature(
                 body,
                 request.headers.get("X-Hub-Signature-256"),
-                secret,
+                secret or "",
             ):
                 raise HTTPException(status_code=403, detail="Invalid signature.")
 
@@ -340,15 +411,14 @@ def create_app() -> Any:
             incoming = parse_meta_payload(payload)
         else:
             form = {key: str(value) for key, value in (await request.form()).multi_items()}
-            if secret:
-                auth_token = settings.whatsapp_access_token or secret
-                if not verify_twilio_signature(
-                    str(request.url),
-                    form,
-                    request.headers.get("X-Twilio-Signature"),
-                    auth_token,
-                ):
-                    raise HTTPException(status_code=403, detail="Invalid signature.")
+            auth_token = settings.whatsapp_access_token or secret
+            if not verify_twilio_signature(
+                str(request.url),
+                form,
+                request.headers.get("X-Twilio-Signature"),
+                auth_token,
+            ):
+                raise HTTPException(status_code=403, detail="Invalid signature.")
             incoming = parse_twilio_payload(form)
 
         if incoming is None:
