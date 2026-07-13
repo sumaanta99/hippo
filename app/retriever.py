@@ -14,7 +14,13 @@ from pydantic import BaseModel, Field
 from config import Settings, get_settings
 from json_utils import parse_json_object
 from logger import get_logger
-from memory import MemoryRecord, MemoryStore, format_memories_for_prompt
+from memory import (
+    MemoryRecord,
+    MemoryStore,
+    format_memories_for_prompt,
+    is_schedule_query,
+    memory_mentions_schedule,
+)
 from log_redaction import redact_for_log
 from prompts import GENERAL_CHAT_PROMPT, HIPPO_SYSTEM, QUERY_RESPONSE_PROMPT, rerank_prompt
 from prompts.safety import wrap_memory_data, wrap_user_content
@@ -76,10 +82,17 @@ class MemoryRetriever:
             logger.info("No retrieval candidates found for query=%s", log_query)
             return []
 
-        if not self._settings.enable_rerank_llm or _is_confident_match(
-            cleaned_query, candidates
-        ):
-            logger.info("Skipping rerank for query=%s (fast path)", log_query)
+        if not self._settings.enable_rerank_llm:
+            filtered = _filter_relevant_candidates(cleaned_query, candidates)
+            logger.info(
+                "Filtered to %d/%d candidates without rerank for query=%s",
+                len(filtered),
+                len(candidates),
+                log_query,
+            )
+            return filtered[:candidate_limit]
+
+        if _is_confident_match(cleaned_query, candidates):
             return candidates[:candidate_limit]
 
         logger.info(
@@ -147,9 +160,7 @@ class MemoryRetriever:
             self._memory_store.search_by_entity(query),
         )
         keyword_matches = _merge_candidates([], keyword, entity, top_k)
-        if keyword_matches and (
-            _is_confident_match(query, keyword_matches) or len(keyword_matches) <= 2
-        ):
+        if keyword_matches and _is_confident_match(query, keyword_matches):
             return keyword_matches
 
         semantic = await self._memory_store.semantic_search(
@@ -296,6 +307,42 @@ def _query_tokens(query: str) -> list[str]:
         for token in re.findall(r"[a-z0-9]+", query.lower())
         if len(token) > 1 and token not in _RERANK_SKIP_STOPWORDS
     ]
+
+
+def _stem_matches(token: str, haystack: str) -> bool:
+    """Return True when a token matches a haystack word exactly or by prefix."""
+    if token in haystack:
+        return True
+    if len(token) < 4:
+        return False
+
+    prefix = token[:4]
+    for word in re.findall(r"[a-z0-9]+", haystack):
+        if word.startswith(prefix) or token.startswith(word[:4]):
+            return True
+    return False
+
+
+def _candidate_matches_query(query: str, memory: MemoryRecord) -> bool:
+    """Return True when a memory shares enough query tokens to be relevant."""
+    if is_schedule_query(query) and memory_mentions_schedule(memory):
+        return True
+
+    tokens = _query_tokens(query)
+    if not tokens:
+        return False
+
+    haystack = f"{memory.title} {memory.content}".lower()
+    matches = sum(1 for token in tokens if _stem_matches(token, haystack))
+    return matches >= max(1, len(tokens) // 2)
+
+
+def _filter_relevant_candidates(
+    query: str,
+    candidates: Sequence[MemoryRecord],
+) -> list[MemoryRecord]:
+    """Keep only candidates that overlap meaningfully with the query."""
+    return [memory for memory in candidates if _candidate_matches_query(query, memory)]
 
 
 def _is_confident_match(query: str, candidates: Sequence[MemoryRecord]) -> bool:

@@ -37,18 +37,15 @@ def test_auth_disabled_only_allowed_in_development(temp_db_path) -> None:
         )
 
 
-def test_session_secret_required_outside_auth_bypass(
-    temp_db_path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_session_secret_required_outside_auth_bypass(temp_db_path) -> None:
     """Non-production environments still require a session secret by default."""
-    monkeypatch.delenv("HIPPO_SESSION_SECRET", raising=False)
-    monkeypatch.setenv("HIPPO_AUTH_DISABLED", "false")
     with pytest.raises(ValueError, match="HIPPO_SESSION_SECRET"):
         Settings(
             openai_api_key="test-key",
             database_path=str(temp_db_path),
             hippo_env="development",
+            session_secret=None,
+            auth_disabled=False,
         )
 
 

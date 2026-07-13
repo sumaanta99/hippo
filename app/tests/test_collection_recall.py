@@ -7,7 +7,7 @@ import pytest
 from types import SimpleNamespace
 
 from config import MemoryType
-from memory import format_collection_answer, format_recall_answer, format_schedule_answer, is_collection_query, is_schedule_query, merge_memories, to_second_person
+from memory import format_collection_answer, format_recall_answer, format_schedule_answer, is_collection_query, is_schedule_query, merge_memories, strip_reminder_framing, to_second_person
 from retriever import MemoryRetriever
 from services.memory_service import MemoryService
 from tests.conftest import MockLLMClient, make_memory
@@ -101,6 +101,32 @@ def test_to_second_person_rewrites_location_memory() -> None:
         to_second_person("I put my passport in the locker")
         == "You put your passport in the locker"
     )
+
+
+def test_strip_reminder_framing() -> None:
+    """Reminder saves should recall as direct actions."""
+    assert (
+        strip_reminder_framing("Remind me to message Angela about the Q3 budget")
+        == "Message Angela about the Q3 budget"
+    )
+    assert (
+        strip_reminder_framing("User wants to message Angela about the Q3 budget")
+        == "Message Angela about the Q3 budget"
+    )
+
+
+def test_format_recall_answer_strips_reminder_framing() -> None:
+    """Follow-up recalls should not echo 'Remind you to'."""
+    memories = [
+        make_memory(
+            "Angela follow-up",
+            "Remind me to message Angela about the Q3 budget",
+            MemoryType.FACT,
+        )
+    ]
+    answer = format_recall_answer(memories, query="what did i have to message angela")
+    assert answer == "Found it. Message Angela about the Q3 budget."
+    assert "Remind you" not in answer
 
 
 def test_format_recall_answer_location_query() -> None:

@@ -114,3 +114,32 @@ async def test_rerank_confidence_threshold(memory_repo, test_settings) -> None:
     )
     assert len(results) == 1
     assert results[0].id == created.id
+
+
+@pytest.mark.asyncio
+async def test_unrelated_memories_do_not_match_passport_query(
+    memory_repo, test_settings
+) -> None:
+    """Queries should not return every memory in a small session."""
+    await memory_repo.create(
+        make_memory(
+            "Angela follow-up",
+            "Message Angela about the Q3 budget",
+            MemoryType.FACT,
+        )
+    )
+    await memory_repo.create(
+        make_memory(
+            "Client deck deadline",
+            "Send the client deck by Friday EOD",
+            MemoryType.FACT,
+        )
+    )
+
+    retriever = MemoryRetriever(memory_repo.store, test_settings)
+    results = await retriever.retrieve_and_rerank(
+        "Where did I put my passport?",
+        user_id=test_settings.user_id,
+        top_k=5,
+    )
+    assert results == []

@@ -21,6 +21,7 @@ User message:
 Guidance:
 - Links, URLs, and collections of resources should use memory_type "list"
 - A single stored location for an object should use memory_type "object_location"
+- When the user says "remind me to ..." or similar, store the action itself (e.g. "Message Angela about the Q3 budget"), not the reminder wrapper
 
 Return JSON only:
 {{

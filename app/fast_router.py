@@ -41,7 +41,8 @@ def _is_greeting(message: str) -> bool:
 
 _SHOPPING_SHOW = re.compile(
     r"(?:what(?:'s|\s+is)\s+on\s+(?:my\s+)?(?:shopping\s+)?list|"
-    r"show\s+(?:my\s+)?(?:shopping\s+)?list|shopping\s+list\s*\?*$)",
+    r"show\s+(?:my\s+)?(?:shopping\s+)?list|"
+    r"^shopping\s+list\s*\?*$)",
     re.IGNORECASE,
 )
 
@@ -80,6 +81,8 @@ _QUERY = re.compile(
 _SAVE = re.compile(
     r"\b(?:is\s+(?:our|my|the|a|an|in|on|at|inside|under)|are\s+(?:in|on|at)|"
     r"remind\s+me|follow\s+up|message\s+\w+|"
+    r"send\s+.+\s+by\s+|"
+    r"\bby\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|tomorrow|eod|end\s+of\s+day)\b|"
     r"\b(?:in|on|at|inside|under)\s+(?:the\s+)?\w+|"
     r"\b(?:on|in|at|inside|under)\s+\w+|"
     r"\bnumber\b|"
@@ -97,11 +100,14 @@ def try_fast_classify(message: str) -> tuple[Intent, float, str] | None:
     if _is_greeting(cleaned):
         return _result(Intent.GENERAL_CHAT, "Greeting or casual chat.")
 
-    if _SHOPPING_SHOW.search(cleaned):
-        return _result(Intent.SHOPPING_SHOW, "Shopping list request.")
-
     if _SHOPPING_REMOVE.search(cleaned):
         return _result(Intent.SHOPPING_REMOVE, "Shopping list removal.")
+
+    if _SHOPPING_ADD.search(cleaned):
+        return _result(Intent.SHOPPING_ADD, "Shopping list addition.")
+
+    if _SHOPPING_SHOW.search(cleaned):
+        return _result(Intent.SHOPPING_SHOW, "Shopping list request.")
 
     if _DELETE.search(cleaned):
         return _result(Intent.DELETE_MEMORY, "Delete memory request.")
@@ -111,9 +117,6 @@ def try_fast_classify(message: str) -> tuple[Intent, float, str] | None:
 
     if _UPDATE.search(cleaned):
         return _result(Intent.UPDATE_MEMORY, "Memory update request.")
-
-    if _SHOPPING_ADD.search(cleaned):
-        return _result(Intent.SHOPPING_ADD, "Shopping list addition.")
 
     if _SAVE.search(cleaned):
         return _result(Intent.SAVE_MEMORY, "Declarative save statement.")

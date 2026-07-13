@@ -856,6 +856,26 @@ def to_second_person(text: str) -> str:
     return detail
 
 
+_REMINDER_PREFIX = re.compile(
+    r"^(?:remind (?:me|you) to|remember to|don't forget to)\s+",
+    re.IGNORECASE,
+)
+_ACTION_PREFIX = re.compile(
+    r"^(?:user wants to|you want to)\s+",
+    re.IGNORECASE,
+)
+
+
+def strip_reminder_framing(text: str) -> str:
+    """Drop reminder scaffolding so recalls read as direct actions."""
+    detail = text.strip().rstrip(".")
+    detail = _REMINDER_PREFIX.sub("", detail).strip()
+    detail = _ACTION_PREFIX.sub("", detail).strip()
+    if detail and detail[0].islower():
+        detail = detail[0].upper() + detail[1:]
+    return detail
+
+
 _LOCATION_PHRASES = (
     "where is",
     "where's",
@@ -882,7 +902,7 @@ def format_recall_answer(
     else:
         raw = format_entity_answer(memories).rstrip(".")
 
-    content = to_second_person(raw)
+    content = to_second_person(strip_reminder_framing(raw))
     if query and is_location_query(query) and _has_first_person(raw):
         return f"{content}."
 
@@ -953,6 +973,12 @@ def is_schedule_query(query: str) -> bool:
         return True
 
     return "upcoming" in normalized or "when" in tokens or "any" in tokens
+
+
+def memory_mentions_schedule(memory: MemoryRecord) -> bool:
+    """Return True when a memory looks like a meeting or calendar entry."""
+    haystack = f"{memory.title} {memory.content}".lower()
+    return any(word in haystack for word in _SCHEDULE_WORDS)
 
 
 _SCHEDULE_CONTENT_PREFIX = re.compile(
